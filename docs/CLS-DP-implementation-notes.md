@@ -402,10 +402,15 @@ Not blockers, but worth knowing. I did not change existing files except to add `
 
 ## 11. Environment
 
-There was **no conda and no project environment on this machine** — the README's
-`conda create -n RoboFactory python=3.9` had never been run here. I created
-`/Users/evan.dodani/dev/RoboFactory/.venv` from the system Python 3.9.6 (the same version the
-README asks for) and added `.venv/` to `.gitignore`.
+**Official replication path (Linux x86_64):** `pyproject.toml` + `uv.lock` + `setup_uv.sh`.
+That creates a uv-managed Python 3.9 `.venv`. Recreate with `bash setup_uv.sh --force`
+or `uv sync --python 3.9`. `robofactory/requirements.txt` is a pip-readable mirror of the
+direct pins, not the source of truth.
+
+The first pass on macOS had **no conda** — the README's old `conda create -n RoboFactory python=3.9`
+had never been run there. A local `/Users/evan.dodani/dev/RoboFactory/.venv` was built from
+system Python 3.9.6 as a fallback and `.venv/` was gitignored. A later Linux pass used
+Miniforge; that conda env is **not** the replication recipe either.
 
 `pip install -r robofactory/requirements.txt` **fails on macOS**, at `mani_skill` ->
 `sapien==3.0.0.b1`:
@@ -440,8 +445,12 @@ Two environment notes:
 - **`sentencepiece` was missing.** `SiglipTokenizer` requires it and `transformers` does not pull it
   in. Found by running the real encoder; now pinned in `requirements.txt`.
 
-**Consequence:** everything except `eval_multi_cls_dp.py`'s simulator loop is testable here. Actual
-training and rollouts need the Linux GPU box.
+**Consequence on macOS:** everything except `eval_multi_cls_dp.py`'s simulator loop is testable.
+Actual training and rollouts need Linux x86_64.
+
+**Linux x86_64 uv env (this recipe):** `mani_skill` pulls `numpy==1.26.4`, sapien 3.0.0b1
+imports, and `setuptools` stays at 80.x. That is the stack to replicate. `uv.lock` pins
+the full transitive graph.
 
 ---
 
@@ -623,3 +632,5 @@ action-expert is deliberately identical to it apart from the cross-attention bra
   SigLIP run surfaced: numba/float16, unmasked SigLIP text padding, missing `sentencepiece`, and
   `JsonLogger`'s missing output directory (section 13).
 - Pinned `sentencepiece==0.2.2`.
+- Pinned `setuptools>=70,<81` so SAPIEN can still import `pkg_resources`.
+- Replaced the conda recipe with `pyproject.toml` + `uv.lock` + `setup_uv.sh`.

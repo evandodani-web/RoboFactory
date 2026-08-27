@@ -1,3 +1,5 @@
+# Canonical pins live in ../pyproject.toml (and uv.lock).
+# This file is a pip-readable mirror of the direct dependencies.
 mani_skill==3.0.0b12
 zarr==2.18.2
 hydra-core==1.3.2
@@ -12,3 +14,5 @@ numba==0.60.0
 # sentencepiece is required by SiglipTokenizer; transformers does not pull it in.
 transformers==4.49.0
 sentencepiece==0.2.2
+# SAPIEN still imports pkg_resources; setuptools 82 removed it.
+setuptools>=70,<81

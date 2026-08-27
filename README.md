@@ -14,14 +14,23 @@ RoboFactory is a benchmark for embodied multi-agent manipulation, based on [Mani
 </div>
 
 ## 🚀 Quick Start
-First, clone this repository to your local machine, and install [vulkan](https://maniskill.readthedocs.io/en/latest/user_guide/getting_started/installation.html#vulkan) and the following dependencies.
+First, clone this repository to your local machine, and install [vulkan](https://maniskill.readthedocs.io/en/latest/user_guide/getting_started/installation.html#vulkan). The replicable environment is a uv-managed Python 3.9 `.venv` from [`pyproject.toml`](pyproject.toml) and [`uv.lock`](uv.lock).
+
 ```bash
 git clone git@github.com:MARS-EAI/RoboFactory.git
-conda create -n RoboFactory python=3.9
-conda activate RoboFactory
 cd RoboFactory
-pip install -r requirements.txt
-# (optional): conda install -c conda-forge networkx=2.5
+# Installs uv if it is missing, then syncs .venv from the lockfile.
+bash setup_uv.sh
+source .venv/bin/activate
+cd robofactory
+```
+
+Equivalent, if you already have [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv sync --python 3.9
+source .venv/bin/activate
+cd robofactory
 ```
 Then download the 3D assets in RoboFactory task:
 ```bash
@@ -149,13 +158,16 @@ Agent counts for the six benchmark tasks: `LiftBarrier` 2, `PlaceFood` 2, `TwoRo
 ### Tests
 Both suites run on CPU in seconds and need no GPU, simulator or SigLIP download.
 ```bash
+cd robofactory
 python policy/Diffusion-Policy/verify_cls_dp.py        # module math and shapes
 python policy/Diffusion-Policy/verify_cls_pipeline.py  # end to end on synthetic data
 ```
 
 ### Notes
+- Recreate the env from scratch with `bash setup_uv.sh --force` or `uv sync --python 3.9`.
+  Commit `uv.lock`; do not hand-edit `.venv` and treat it as the recipe.
 - The simulator cannot be installed on macOS: SAPIEN publishes manylinux and Windows wheels only.
-  Use Linux x86_64 with Python 3.9, where `pip install -r requirements.txt` works as written.
+  Use Linux x86_64 with Python 3.9. `setuptools` must stay `<81` (SAPIEN still imports `pkg_resources`).
 - `ReplayBuffer` loads the whole dataset into RAM (~9GB per agent at 150 episodes), and the
   intermediate `.pkl` tree is uncompressed and large. Budget memory and disk accordingly; the
   `.pkl` tree can be deleted once the `.zarr` exists.
