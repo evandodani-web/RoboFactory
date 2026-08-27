@@ -1,0 +1,522 @@
+# CLS-DP Implementation Notes
+
+Running log of decisions, rationale, and open questions while implementing CLS-DP in this repo.
+Companion to [CLS-DP-replication-spec.md](CLS-DP-replication-spec.md), which is the paper extraction.
+
+**Everything marked `[REVIEW]` is a judgement call I made where the paper is silent or where the
+repo forced my hand. Those are the things worth your attention.** They are collected in
+section 12 so you can skim them in one pass.
+
+Status: implementation complete, module-level checks passing. Not yet run end to end on real
+data (no GPU or RoboFactory environment available in this session).
+
+---
+
+## 0. Where the code lives
+
+**Decision:** implement inside the existing `diffusion_policy` package rather than creating a
+sibling `policy/CLS-DP/` directory.
+
+**Rationale.** The repo's README says "we plan to provide more policies in the future", which hints
+at sibling directories under `policy/`. But `diffusion_policy` is not really "the DP policy" — it is
+the shared training library (normalizer, replay buffer, sequence sampler, UNet components,
+checkpoint utils, Hydra config root). A sibling directory would either duplicate ~60 files or
+require fragile cross-package `sys.path` surgery.
+
+Keeping CLS-DP inside the package means three things work with **zero** plumbing changes:
+
+1. `train.py` is already generic — it just does `hydra.utils.get_class(cfg._target_)` and calls
+   `workspace.run()`. Both CLS-DP stages reuse it as-is; only `--config-name` differs.
+2. Hydra's `config_path` already points at `diffusion_policy/config`.
+3. `get_policy()` at eval reconstructs a workspace from `cfg._target_` stored inside the
+   checkpoint, so CLS-DP checkpoints load through the same path as DP checkpoints.
+
+New files are namespaced with a `cls_` prefix or live under `model/cls/`.
+
+### File inventory
+
+| File | Purpose |
+|---|---|
+| `script/generate_instructions.py` | Builds the per-task instruction bank |
+| `script/parse_pkl_to_zarr_multi.py` | Per-agent pkl -> time-aligned multi-agent zarr |
+| `script/precompute_siglip_features.py` | Caches frozen SigLIP features into that zarr |
+| `configs/instructions/*.json` | 100 train + 100 held-out eval instructions per task |
+| `model/cls/siglip_encoder.py` | Frozen SigLIP wrapper (never part of a saved model) |
+| `model/cls/prior_net.py` | Eq. 7 observation-conditioned prior + Fig. 4 attention split |
+| `model/cls/ma_kinematics.py` | Eq. 8 privileged encoder and the reconstruction decoder |
+| `model/cls/cross_attention.py` | `CrossAttention1d` + `LatentTokenizer` |
+| `model/diffusion/cls_conditional_unet1d.py` | U-Net with z cross-attention in down + mid |
+| `policy/contextualizer.py` | Stage 1 CVAE and the residual KL |
+| `policy/cls_diffusion_unet_image_policy.py` | Stage 2 action-expert |
+| `dataset/multi_agent_image_dataset.py` | One dataset serving both stages |
+| `workspace/contextualizer_workspace.py` | Stage 1 loop + the go/no-go gate |
+| `workspace/cls_robotworkspace.py` | Stage 2 loop |
+| `config/cls_stage1.yaml`, `config/cls_dp.yaml`, `config/task/cls_task.yaml` | Hydra |
+| `train_cls_stage1.sh`, `train_cls_dp.sh`, `eval_cls_multi.sh` | Entry points |
+| `eval_multi_cls_dp.py` | Decentralized rollout |
+| `verify_cls_dp.py` | CPU correctness checks, no data or GPU needed |
+
+---
+
+## 1. Timestep indexing — the single most important convention
+
+This tripped me up, so it is worth writing down precisely.
+
+The paper defines `A_t := a_{t:t+H-1}` (H future actions, execute the first 6). This repo's
+`DiffusionUnetImagePolicy` does something subtly different:
+
+```python
+start = To - 1          # To = n_obs_steps = 3  ->  start = 2
+end = start + self.n_action_steps
+action = action_pred[:, start:end]
+```
+
+The sampled window has length `horizon=8` with `pad_before = n_obs_steps-1 = 2`. Window index
+`To-1 = 2` **is** time `t` — the timestep of the most recent observation. So the U-Net predicts 8
+actions spanning `a_{t-2} .. a_{t+5}`, and slicing `[2:10]` on a length-8 tensor yields **6** actions
+`a_t .. a_{t+5}`. That is exactly the paper's "Execution steps: 6", and it confirms the authors ran
+against this codebase.
+
+**Decision `[REVIEW]`:** keep the repo convention for the action-expert rather than switching to the
+paper's literal `a_{t:t+H-1}`.
+
+Why: the `Ours w/o CLS` ablation is supposed to be "this policy minus `z`". If I change the action
+indexing, the ablation is no longer the repo's DP and the headline 38-vs-9 comparison stops being
+apples-to-apples. Keeping the convention also means the trained policy drops straight into the
+existing eval loop, which hardcodes `for i in range(6)`.
+
+The privileged target **does** follow the paper literally: `s^{1:N}_{t+1:t+H}`, i.e. 8 steps
+starting one step after `t`.
+
+### Window layout
+
+`sequence_length = n_obs_steps + n_future_states = 3 + 8 = 11`, `pad_before = 2`, `pad_after = 8`.
+
+```
+window index:   0     1     2     3     4    ...    10
+absolute time: t-2   t-1    t    t+1   t+2   ...   t+8
+
+obs history        [0 : 3]        -> O_t^i, S_t^i          (L = 3)
+action target      [0 : 8]        -> UNet horizon          (H = 8)
+  executed slice     [2 : 8]      -> a_t .. a_{t+5}        (6 steps)
+privileged future  [3 : 11]       -> s^{1:N}_{t+1:t+8}     (F = 8)
+prior frame          [2]          -> o_t^i (current only)
+```
+
+I verified against `create_indices` in `common/sampler.py` that this covers every timestep
+`t` in `[0, episode_len-1]` exactly once: `min_start = -pad_before = -2` gives `t=0`, and
+`max_start = ep_len - 11 + 8 = ep_len - 3` gives `t = ep_len-1`. Edge padding repeats the first/last
+frame, which is the standard DP behaviour.
+
+Config resolution confirms the executed slice is 6 steps; see section 11.
+
+---
+
+## 2. Data pipeline
+
+### 2.1 What the existing pipeline already gives us
+
+Confirmed by reading `script/parse_h5_to_pkl_multi.py`:
+
+```python
+joint_action=res["action"][f'panda-{agent_id}'][j],
+endpose=res["action"][f'panda-{agent_id}'][j],
+```
+
+Both fields come from the same array, and `parse_pkl_to_zarr_dp.py` then writes that same array into
+`state`, `action`, **and** `tcp_action`. So `d_s = d_a = 8` and `s_t^i` is the *commanded joint
+target* (7 arm joints + 1 gripper), not measured qpos. This is consistent with eval, where
+`agent_pos` is fed from the previously executed action.
+
+Useful consequence: the privileged target `s^{1:N}_{t+1:t+H}` is literally **all agents' future
+action trajectories**. No new simulation or re-collection is needed.
+
+Critically, the pkl writer loops `for agent_id in range(agent_num + 1)` over the *same* episode index
+`i` and step index `j`, with `min_len` computed once from `panda-0`. So per-agent pkl directories are
+already step-aligned. Building a multi-agent zarr is a pure re-packaging job.
+
+### 2.2 New multi-agent zarr
+
+`script/parse_pkl_to_zarr_multi.py` produces `data/zarr_data/{task}_multi_{num}.zarr`:
+
+```
+data/
+  head_camera_agent{i}   (T, 3, 240, 320) uint8
+  state_agent{i}         (T, 8) float32
+  action_agent{i}        (T, 8) float32
+  instruction_id         (T,)   int64
+  siglip_img_agent{i}    (T, 17, 768) float16   <- added by the precompute script
+meta/
+  episode_ends           (E,)   int64
+```
+
+`episode_ends` is shared across agents because steps are aligned. This layout is exactly what
+`ReplayBuffer.copy_from_store` expects (a `data/` group plus `meta/episode_ends`), so the existing
+`SequenceSampler` works unmodified. `instruction_id` is constant within an episode.
+
+The script buffers **one episode at a time** and uses `zarr.Array.append`, so peak memory stays
+bounded. The single-agent script accumulates everything in a Python list first, which would be
+roughly `N x 7GB` here.
+
+**`[REVIEW]` The `{task}_global` pkl directory is deliberately ignored.** It contains
+`head_camera_global`, and CLS-DP explicitly forbids shared global views. Using it would invalidate
+the whole premise.
+
+### 2.3 Memory note
+
+`ReplayBuffer.copy_from_path(..., store=None)` loads every requested array fully into RAM. That is
+why the dataset's key set is stage-dependent (section 5.5): Stage 1 runs at batch size 512 and does
+not touch images at all, so it never pays the ~7GB per-agent camera cost.
+
+---
+
+## 3. Instructions
+
+The paper generates instructions with an LLM, then diversifies them following RoboTwin 2.0:
+100 for training, 100 held out for evaluation, one sampled per episode and shared by all agents.
+
+**Decision `[REVIEW]`:** ship a deterministic template-based generator
+(`script/generate_instructions.py`) instead of calling an LLM. Reproducible without an API key and
+no network dependency in the data pipeline. The seed phrasings are taken verbatim from the paper's
+Table IV so the distribution is anchored to the original. It produces 240-756 unique phrasings per
+task, then splits 100/100 with a fixed seed. If you want true LLM instructions, replace the JSON
+files — nothing else depends on how they were produced.
+
+The generator hard-fails if a task cannot produce 200 unique phrasings, which caught three tasks
+that were initially too thin.
+
+**Two bugs caught while generating:**
+
+1. **Colour mismatch.** The paper's stacking instructions say "blue / red / green", but the configs
+   define `cubeA` blue, `cubeB` **green**, `cubeC` **red**. The generator follows the configs so the
+   language matches what the agent actually sees.
+2. **Grammar leaks.** The first version produced "Both arms Hoist the barrier" (capitalised verb
+   mid-sentence) and "Bring the item **at** its target position" (wrong preposition). Fixed with a
+   slot naming convention: capitalised keys are sentence-initial verbs, `*_l` keys are the
+   mid-sentence forms, and `to_target` / `at_target` are separate so motion verbs and placement
+   verbs get the right preposition. Camera Alignment and Take Photo also get target wording that
+   does not mention a "goal region", since those tasks mark the target with a static cube.
+
+---
+
+## 4. SigLIP handling
+
+Both towers are frozen and the prior consumes only the **current** frame, so features can be
+precomputed once. But caching all 196 patch tokens at 768-d is ~300 KB/frame, larger than the source
+image (~230 KB), and would exceed 9 GB per agent.
+
+**Decision `[REVIEW]`:** average-pool the 14x14 patch grid down to `4x4 = 16` tokens and prepend the
+pooled embedding, giving `M = 17` tokens per frame. That is ~26 KB/frame in fp16, roughly 1/12 the
+naive cost, while preserving enough spatial structure for cross-attention and keeping the Fig. 4
+text-vs-image split measurable.
+
+Text is trivial to cache (200 instructions per task), so it is stored at full token resolution in a
+sidecar `.npz`. It cannot live inside the zarr because its leading dimension is the instruction
+count, not the timestep count, and `ReplayBuffer` expects every array under `data/` to share a time
+axis.
+
+**Decision:** SigLIP lives **outside** any saved model. `SigLIPFeatureExtractor` is instantiated by
+the precompute script and by the eval script, never by a policy. This keeps checkpoints free of
+~800 MB of frozen weights and means dataloader workers never need a GPU.
+
+Consequence: **`precompute_siglip_features.py` is a required pipeline step**, not an optimisation.
+The eval script runs SigLIP live because there is no cache at rollout time.
+
+`transformers==4.49.0` added to `robofactory/requirements.txt`.
+
+---
+
+## 5. The CVAE
+
+### 5.1 Residual KL in closed form
+
+With `mu_q = mu_rho + mu_E`, `sigma_q = sigma_E`, `mu_p = mu_rho`, `sigma_p = sigma_rho`, the prior
+mean cancels out of the mean-difference term:
+
+```
+KL = sum_d [ log(sigma_rho/sigma_E) + (sigma_E^2 + mu_E^2) / (2 * sigma_rho^2) - 0.5 ]
+```
+
+Implemented over log-sigmas in `_residual_kl`. This is not just an optimisation — it is the
+mechanism:
+
+- `mu_rho` gets **no gradient from the KL at all**. It is trained purely by reconstruction, flowing
+  through `z`. That is what forces the prior mean to encode teammate dynamics.
+- `sigma_rho` gets gradient **only** from the KL, aligning it to `sigma_E`.
+
+If you implement the posterior as an independent Gaussian, the first property disappears and the
+distillation stops working. `verify_cls_dp.py` guards this by drawing `mu_rho` at scale 5.0 and
+asserting the closed form still matches `torch.distributions.kl_divergence` exactly — if the prior
+mean leaked in, that test would blow up. Measured error: **0.000e+00**.
+
+### 5.2 Zero-init trick `[REVIEW]`
+
+`to_mu_residual` and both `to_log_sigma` heads are zero-initialised. At step 0 this gives
+`mu_E = 0` and `sigma_E = sigma_rho = 1`, so **the posterior starts exactly equal to the prior and
+the KL starts at exactly 0** (verified). The residual only grows as far as reconstruction demands.
+
+Not stated in the paper, but it follows naturally from the residual parameterisation and makes the
+beta warm-up better behaved. Cheap to revert.
+
+### 5.3 Beta warm-up
+
+`beta = 1e-1` with linear warm-up over the first 40% of training (Table I), implemented as a ramp
+`0 -> beta` across the first `0.4 * total_steps` optimizer steps, then constant.
+
+### 5.4 The go/no-go gate
+
+Stage 1 logs reconstruction error split into **own-agent** and **teammate** components:
+
+- `ctx_recon_own` — how well `D(s_t^i, z)` reconstructs agent `i`'s own future
+- `ctx_recon_others` — how well it reconstructs everyone else's
+- `ctx_recon_others_baseline` — a batch-mean predictor on the same targets
+
+`recon_others` is the real signal. `s_t^i` alone explains `recon_own` reasonably well, so only the
+teammate term proves that `z` carries coordination information. `ContextualizerWorkspace` prints an
+explicit PASS/FAIL at the end of training. **If it FAILs, do not bother running Stage 2** — the
+latent is empty and you will just reproduce the `w/o CLS` ablation at higher cost.
+
+### 5.5 One dataset, two stages
+
+`MultiAgentImageDataset` takes a `stage` flag that controls which zarr keys get loaded:
+
+- Stage 1: every agent's `state_agent{j}`, this agent's `siglip_img_agent{i}`, `instruction_id`
+- Stage 2: this agent's camera, state, action, SigLIP features, `instruction_id`
+
+This matters for more than tidiness. Stage 1 runs at batch size 512; if it pulled raw images it
+never uses, the preallocated buffers alone would be `512 x 11 x 230KB` = 1.3 GB, on top of ~7 GB of
+resident replay buffer per agent.
+
+---
+
+## 6. Architecture sizing
+
+The paper gives no layer counts. I sized against the parameter budget derived from Table III in the
+spec (~2.3 M for the MA-kinematics pair, ~95 M marginal per agent). Measured values from
+`verify_cls_dp.py`:
+
+| Module | Config | Params (measured) |
+|---|---|---|
+| `MAKinematicsEncoder` | `d_model=256`, 2 layers, 4 heads, ff 512 | 1.19 M |
+| `MAKinematicsDecoder` | `d_model=256`, 2 layers, 4 heads, ff 512 | 1.66 M |
+| encoder + decoder | | **2.85 M** (derived target ~2.3 M) |
+| `PriorNet` | `d_model=768`, 2 layers, 8 heads, ff 2048 | 17.3 M |
+| `CLSConditionalUnet1D` | `[256,512,1024]`, incl. 5 cross-attn sites | 78.1 M |
+
+Per-agent deployed total is roughly `78.1 + 17.3 + 11` (ResNet-18) = **~106 M**, against the ~95 M
+marginal cost implied by Table III. Same order, slightly heavy — the encoder/decoder pair is about
+0.5 M over budget and `PriorNet` is a guess. All Hydra-configurable if you want to trim.
+
+---
+
+## 7. Cross-attention injection
+
+Per the paper, `z` enters **only** the downsampling and bottleneck stages, never the upsampling path.
+With `down_dims: [256, 512, 1024]` that is 3 down levels + 2 mid blocks = **5 injection sites**
+(asserted in `verify_cls_dp.py`).
+
+`CLSConditionalUnet1D` is a new file rather than a modification of `ConditionalUnet1D`, so the
+existing DP and the `w/o CLS` ablation stay byte-identical.
+
+**Decision `[REVIEW]`:** the cross-attention output projection is **zero-initialised**, so every
+block is an exact identity at step 0 and the network starts as vanilla DP, then learns to use `z`.
+Standard practice for adding a conditioning branch (ControlNet-style) and it noticeably stabilises
+early training. Verified both directions: identical output with and without `z` at init, and a
+non-zero difference once the projections have moved.
+
+**Decision `[REVIEW]`:** `z (256,)` is projected to `n_cond_tokens = 4` tokens of width 256 for
+keys/values. The paper does not say how a single latent vector becomes an attention context. One
+token would work; 4 gives slightly more capacity at negligible cost.
+
+---
+
+## 8. Stage 2 details
+
+- `z` is sampled from the **prior** during Stage 2 training, never the posterior — the paper is
+  explicit, and it is what makes train and deploy consistent.
+- `sg(z)` is enforced with `torch.no_grad()` around the prior forward plus `.detach()`.
+- `PriorNet` is frozen with `requires_grad_(False)` and forced back to `.eval()` on every `train()`
+  call, so its norm/dropout statistics cannot drift from what Stage 1 produced.
+- The optimizer is built from `filter(requires_grad)`, so frozen params never reach AdamW.
+- Prior weights are loaded **before** the EMA deepcopy, so both models start identical. `EMAModel`
+  copies `requires_grad=False` params verbatim rather than averaging them (checked in
+  `ema_model.py`), so the frozen prior stays exactly frozen in the EMA copy too.
+- `PriorNet` **is** part of the policy's `state_dict`, so Stage 2 checkpoints are self-contained
+  and eval needs only that one file plus SigLIP from HuggingFace.
+
+**Decision `[REVIEW]`:** `latent_sample: true` by default at inference — actually sample
+`z ~ N(mu_rho, sigma_rho)` rather than taking the mean. Faithful to Eq. 12, which defines the
+deployed policy as a marginal over `z`. Set `latent_sample: false` (or pass `--latent-sample False`
+to the eval script) for lower-variance, more repeatable rollouts; worth trying if results are noisy.
+
+**Checkpoint size.** Model + EMA + optimizer for ~95 M trainable params lands around 1.1 GB, versus
+roughly 0.9 GB for the repo's DP. `checkpoint_every` is set to 25 rather than the repo's 150 because
+training is only 100 epochs.
+
+---
+
+## 9. Deviations from the repo's DP defaults
+
+Per Table I:
+
+| Setting | Repo DP | CLS-DP |
+|---|---|---|
+| `num_epochs` | 300 | **100** |
+| `batch_size` | 64 | **32** (Stage 2), **512** (Stage 1) |
+| `checkpoint_every` | 150 | **25** |
+| everything else | | unchanged |
+
+`horizon=8`, `n_obs_steps=3`, `K=100`, ResNet-18, FiLM and `lr=1e-4` already match the paper exactly.
+
+**`[REVIEW]` Optimizer.** Table I says "Adam". The repo's DP uses `AdamW` with `weight_decay=1e-6`,
+which is very nearly Adam. I kept `AdamW` so that CLS-DP and the `w/o CLS` ablation differ *only* in
+the collaborative latent. Swap to `torch.optim.Adam` in the configs if you want the literal reading.
+
+---
+
+## 10. Bugs and rough edges found in the existing code
+
+Not blockers, but worth knowing. I did not change existing files except to add `transformers` to
+`requirements.txt`.
+
+1. **`pin_memory()` is a no-op** in `RobotImageDataset`. `Tensor.pin_memory()` returns a *copy* in
+   pinned memory; the return value is discarded. It cannot work as written anyway — the torch views
+   must alias the numpy buffers that the numba sampler writes into, and a pinned copy would not.
+   I omitted it from the new dataset and left a comment saying why.
+2. **`dataset.batch_size` must equal `dataloader.batch_size`.** `default_task.yaml` never sets
+   `dataset.batch_size`, so it silently relies on the class default (64) matching `robot_dp.yaml`'s
+   dataloader (64). Change one and you get an assertion failure deep in `__getitem__`. The CLS task
+   config wires it explicitly via `${dataloader.batch_size}`.
+3. **`get_model_input` yields float64.** Dividing a uint8 array by the Python int `255` promotes to
+   float64. DP gets away with it because `_normalize` casts to `scale.dtype`. The prior inputs bypass
+   the normalizer, so the CLS eval script casts to float32 explicitly.
+4. **`info['success']` is a batched tensor**, not a bool. The existing `if info['success'] == True:`
+   works by accident. The CLS eval script uses an explicit `_is_success` helper.
+5. **`torch.mean(torch.tensor(val_losses))`** on a list of 0-dim tensors works only because they are
+   scalars. The CLS workspace accumulates `.item()` floats instead.
+
+---
+
+## 11. Verification performed
+
+No GPU or RoboFactory environment was available, so this is static plus CPU-level verification.
+
+**Done:**
+
+- All 14 new Python files parse.
+- All three Hydra configs load and every interpolation resolves (checked with OmegaConf, with the
+  Hydra-runtime `${now:}` / `${hydra.job.num}` keys excluded exactly as `robot_dp.yaml` also
+  requires). Confirmed `dataset.batch_size == dataloader.batch_size` in both stages, and that the
+  executed action slice comes out to **6 steps**.
+- All three shell scripts pass `bash -n`.
+- Instruction banks: 6 tasks, 100 train / 100 eval each, verified disjoint, sampled and read for
+  grammar.
+- `verify_cls_dp.py` passes: shapes through every module, the residual-KL identity against torch's
+  generic Gaussian KL (error 0.000e+00), KL exactly 0 at init, cross-attention identity at init,
+  z influencing the U-Net once trained, and 5 injection sites.
+
+**Not done — needs your environment:**
+
+- Any real data. `parse_pkl_to_zarr_multi.py` and `precompute_siglip_features.py` have never been
+  run against actual pkl files or a real SigLIP download.
+- End-to-end Stage 1 -> Stage 2 -> eval.
+- The `predict_action` path with a real `MultiImageObsEncoder` (its `output_shape()` probe needs
+  the real shape_meta).
+
+Start with `--load_num 5` and `training.debug=True` to shake out the plumbing cheaply.
+
+---
+
+## 12. All `[REVIEW]` decisions in one place
+
+| # | Decision | Where | Revert cost |
+|---|---|---|---|
+| 1 | Code lives inside `diffusion_policy`, not a sibling package | section 0 | high |
+| 2 | Repo action-indexing convention over the paper's literal `a_{t:t+H-1}` | section 1 | medium |
+| 3 | `{task}_global` camera ignored entirely | section 2.2 | n/a, required by the method |
+| 4 | Template instruction generator instead of an LLM | section 3 | low, swap the JSON |
+| 5 | Cube colours from configs, not from the paper | section 3 | low |
+| 6 | SigLIP patch grid pooled 14x14 -> 4x4 (17 tokens) | section 4 | low, re-run precompute |
+| 7 | Zero-init posterior heads so KL starts at 0 | section 5.2 | low |
+| 8 | Zero-init cross-attention output projections | section 7 | low |
+| 9 | `n_cond_tokens = 4` | section 7 | low |
+| 10 | `latent_sample: true` at inference | section 8 | low, config flag |
+| 11 | `AdamW` retained rather than literal `Adam` | section 9 | low |
+| 12 | One contextualizer per agent (not weight-shared) | below | high |
+| 13 | Stage 1 also runs 100 epochs | below | low |
+
+**12** follows Eq. 5, which sums over per-agent `(theta_i, psi_i)`. It is the expensive reading;
+sharing weights across agents would cut Stage 1 cost by `N` if you need to economise.
+
+**13**: the paper says "all methods are trained for 100 epochs" but is ambiguous about whether that
+covers the contextualizer. I defaulted Stage 1 to 100 as well.
+
+---
+
+## 13. Runbook
+
+All commands run from the `robofactory/` directory, matching the existing README.
+
+```bash
+# 0. one-time: instruction banks for all six tasks
+python script/generate_instructions.py --all
+
+# 1. collect demonstrations (unchanged from the existing pipeline)
+python script/generate_data.py --config configs/table/lift_barrier.yaml --num 150
+mv <traj>.h5   data/h5_data/LiftBarrier-rf.h5
+mv <traj>.json data/h5_data/LiftBarrier-rf.json
+
+# 2. h5 -> per-agent pkl (unchanged)
+python script/parse_h5_to_pkl_multi.py --task_name LiftBarrier-rf --load_num 150 --agent_num 2
+
+# 3. per-agent pkl -> time-aligned multi-agent zarr  [NEW]
+python script/parse_pkl_to_zarr_multi.py --task_name LiftBarrier-rf --load_num 150 --agent_num 2
+
+# 4. cache frozen SigLIP features into that zarr  [NEW, required]
+python script/precompute_siglip_features.py \
+    --zarr_path data/zarr_data/LiftBarrier-rf_multi_150.zarr
+
+# 5. Stage 1: contextualizer, once per agent
+#    args: task load_num agent_id n_agents seed gpu
+bash policy/Diffusion-Policy/train_cls_stage1.sh LiftBarrier-rf 150 0 2 42 0
+bash policy/Diffusion-Policy/train_cls_stage1.sh LiftBarrier-rf 150 1 2 42 0
+#    -> CHECK THE PASS/FAIL GATE PRINTED AT THE END BEFORE CONTINUING
+
+# 6. Stage 2: action-expert, once per agent
+bash policy/Diffusion-Policy/train_cls_dp.sh LiftBarrier-rf 150 0 2 42 0
+bash policy/Diffusion-Policy/train_cls_dp.sh LiftBarrier-rf 150 1 2 42 0
+
+# 7. decentralized evaluation
+#    args: config data_num ckpt debug task [seed]
+bash policy/Diffusion-Policy/eval_cls_multi.sh \
+    configs/table/lift_barrier.yaml 150 100 1 LiftBarrier-rf 10000
+
+# anytime: CPU module checks, no data or GPU needed
+python policy/Diffusion-Policy/verify_cls_dp.py
+```
+
+Agent counts per task: LiftBarrier 2, PlaceFood 2, TwoRobotsStackCube 2, CameraAlignment 3,
+ThreeRobotsStackCube 3, TakePhoto 4.
+
+### The `w/o CLS` ablation
+
+The paper's decentralized baseline is this policy minus `z`. The cheapest faithful way to get it is
+to train the repo's existing per-agent DP (`train.sh`) on the same demonstrations, since the CLS
+action-expert is deliberately identical to it apart from the cross-attention branch. Reproducing the
+38-vs-9 gap is the primary correctness check on the whole implementation.
+
+---
+
+## 14. Change log
+
+- Extracted the paper into `CLS-DP-replication-spec.md`, including the derived parameter budget from
+  Table III and the residual-KL derivation.
+- Built the data path: instruction generator, multi-agent zarr packer, SigLIP precompute.
+- Built the model: `PriorNet`, `MAKinematicsEncoder` / `Decoder`, `CrossAttention1d`,
+  `LatentTokenizer`, `CLSConditionalUnet1D`, `Contextualizer`, `CLSDiffusionUnetImagePolicy`.
+- Built training: `MultiAgentImageDataset` (both stages), `ContextualizerWorkspace` with the
+  teammate-reconstruction gate, `CLSRobotWorkspace` with frozen-prior loading.
+- Built configs, three shell entry points, and the decentralized eval script.
+- Added `verify_cls_dp.py` and fixed everything it caught.
+- Expanded instruction templates twice: once for the 200-phrasing floor, once for grammar.
+- Added `transformers==4.49.0` to requirements.

@@ -8,7 +8,9 @@ robofactory/data
 robofactory/eval_video
 robofactory/checkpoints
 
-docs/
+docs/*
+!docs/CLS-DP-replication-spec.md
+!docs/CLS-DP-implementation-notes.md
 _ext
 *.pyc
 *.so

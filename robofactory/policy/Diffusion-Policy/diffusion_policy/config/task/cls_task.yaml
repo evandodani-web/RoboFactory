@@ -1,0 +1,33 @@
+name: cls_task
+
+# RoboFactory head cameras are 320x240 RGB; the action/state vector is
+# 7 arm joints + 1 gripper. See docs/CLS-DP-implementation-notes.md section 2.1.
+image_shape: &image_shape [3, 240, 320]
+
+shape_meta: &shape_meta
+  obs:
+    head_cam:
+      shape: *image_shape
+      type: rgb
+    agent_pos:
+      shape: [8]
+      type: low_dim
+  action:
+    shape: [8]
+
+dataset:
+  _target_: diffusion_policy.dataset.multi_agent_image_dataset.MultiAgentImageDataset
+  zarr_path: data/zarr_data/placeholder_multi_150.zarr
+  agent_id: ${agent_id}
+  stage: ${stage}
+  n_agents: ${n_agents}
+  horizon: ${horizon}
+  n_obs_steps: ${n_obs_steps}
+  n_future_states: ${n_future_states}
+  seed: 42
+  val_ratio: 0.02
+  # Must match dataloader.batch_size: the dataset preallocates buffers of exactly this
+  # size and asserts against the index array handed over by BatchSampler.
+  batch_size: ${dataloader.batch_size}
+  max_train_episodes: null
+  text_cache_path: null
