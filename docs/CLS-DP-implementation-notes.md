@@ -5,10 +5,12 @@ Companion to [CLS-DP-replication-spec.md](CLS-DP-replication-spec.md), which is 
 
 **Everything marked `[REVIEW]` is a judgement call I made where the paper is silent or where the
 repo forced my hand. Those are the things worth your attention.** They are collected in
-section 12 so you can skim them in one pass.
+section 14 so you can skim them in one pass.
 
-Status: implementation complete, module-level checks passing. Not yet run end to end on real
-data (no GPU or RoboFactory environment available in this session).
+Status: implementation complete. Both verification suites pass (section 12): module math plus a
+69-check end-to-end run over synthetic data covering the packer, dataset alignment, both losses,
+both training loops and checkpoint round-trip. Not yet run against real demonstrations or the
+simulator — see section 11 for why the simulator cannot be installed on this machine.
 
 ---
 
@@ -54,7 +56,8 @@ New files are namespaced with a `cls_` prefix or live under `model/cls/`.
 | `config/cls_stage1.yaml`, `config/cls_dp.yaml`, `config/task/cls_task.yaml` | Hydra |
 | `train_cls_stage1.sh`, `train_cls_dp.sh`, `eval_cls_multi.sh` | Entry points |
 | `eval_multi_cls_dp.py` | Decentralized rollout |
-| `verify_cls_dp.py` | CPU correctness checks, no data or GPU needed |
+| `verify_cls_dp.py` | Module math and shapes; needs only torch |
+| `verify_cls_pipeline.py` | End-to-end on synthetic data; 69 checks |
 
 ---
 
@@ -397,37 +400,130 @@ Not blockers, but worth knowing. I did not change existing files except to add `
 
 ---
 
-## 11. Verification performed
+## 11. Environment
 
-No GPU or RoboFactory environment was available, so this is static plus CPU-level verification.
+There was **no conda and no project environment on this machine** — the README's
+`conda create -n RoboFactory python=3.9` had never been run here. I created
+`/Users/evan.dodani/dev/RoboFactory/.venv` from the system Python 3.9.6 (the same version the
+README asks for) and added `.venv/` to `.gitignore`.
 
-**Done:**
+`pip install -r robofactory/requirements.txt` **fails on macOS**, at `mani_skill` ->
+`sapien==3.0.0.b1`:
 
-- All 14 new Python files parse.
-- All three Hydra configs load and every interpolation resolves (checked with OmegaConf, with the
-  Hydra-runtime `${now:}` / `${hydra.job.num}` keys excluded exactly as `robot_dp.yaml` also
-  requires). Confirmed `dataset.batch_size == dataloader.batch_size` in both stages, and that the
-  executed action slice comes out to **6 steps**.
-- All three shell scripts pass `bash -n`.
-- Instruction banks: 6 tasks, 100 train / 100 eval each, verified disjoint, sampled and read for
-  grammar.
-- `verify_cls_dp.py` passes: shapes through every module, the residual-KL identity against torch's
-  generic Gaussian KL (error 0.000e+00), KL exactly 0 at init, cross-attention identity at init,
-  z influencing the U-Net once trained, and 5 injection sites.
+```
+ERROR: Could not find a version that satisfies the requirement sapien==3.0.0.b1 (from versions: none)
+```
 
-**Not done — needs your environment:**
+This is pre-existing and is exactly what `setup.py` warns about ("until sapien is uploaded to pypi
+with mac support, users need to install manually"). The workaround URL in that comment is now a
+404, and SAPIEN's current nightly release publishes macOS wheels only for **cp310-cp314** — there is
+no cp39 macOS build. So under the README's Python 3.9, the simulator cannot be installed on macOS at
+all. Even with cp310+ it would still need Vulkan/MoltenVK.
 
-- Any real data. `parse_pkl_to_zarr_multi.py` and `precompute_siglip_features.py` have never been
-  run against actual pkl files or a real SigLIP download.
-- End-to-end Stage 1 -> Stage 2 -> eval.
-- The `predict_action` path with a real `MultiImageObsEncoder` (its `output_shape()` probe needs
-  the real shape_meta).
+Everything else installs at the pinned versions:
+
+| Package | Version |
+|---|---|
+| torch / torchvision | 2.6.0 / 0.21.0 (as pinned) |
+| zarr | 2.18.2 |
+| hydra-core | 1.3.2 |
+| diffusers | 0.32.2 |
+| numba | 0.60.0 |
+| transformers | 4.49.0 |
+| numpy | 2.0.2 |
+
+Two environment notes:
+
+- **numpy resolves to 2.0.2, not 1.26.4.** `mani_skill` pins `numpy<2.0.0`; without it, pip picks
+  2.0.2. Worth knowing because `numpy==1.26.4` **segfaults on import** under this machine's Python
+  3.9.6, so a full install including `mani_skill` may be unusable here regardless of SAPIEN.
+- **`sentencepiece` was missing.** `SiglipTokenizer` requires it and `transformers` does not pull it
+  in. Found by running the real encoder; now pinned in `requirements.txt`.
+
+**Consequence:** everything except `eval_multi_cls_dp.py`'s simulator loop is testable here. Actual
+training and rollouts need the Linux GPU box.
+
+---
+
+## 12. Verification performed
+
+Two suites, both runnable from `robofactory/`:
+
+```bash
+../.venv/bin/python policy/Diffusion-Policy/verify_cls_dp.py        # module math, ~2s
+../.venv/bin/python policy/Diffusion-Policy/verify_cls_pipeline.py  # end to end, ~7s
+```
+
+`verify_cls_dp.py` (needs only torch) covers module shapes, the residual-KL identity against
+`torch.distributions.kl_divergence` (error **0.000e+00** with `mu_rho` drawn at scale 5.0, proving
+the prior mean cancels), KL exactly 0 at init, cross-attention identity at init, and z influencing
+the U-Net once trained.
+
+`verify_cls_pipeline.py` builds a synthetic dataset on disk and drives the real code end to end:
+**69 checks**, covering the pkl->zarr packer, dataset timestep alignment, both loss functions, both
+training workspaces including checkpoint round-trip, and the eval script's pure logic with the
+simulator stubbed out.
+
+The centrepiece is the alignment check. Synthetic states encode their own index as
+`state[t] = [t, agent_id, ...]`, so the test asserts *exactly* which absolute timesteps land where:
+observation history is `o_{t-2..t}`, the action target is `a_{t-2..t+5}`, the executed slice is
+`a_{t..t+5}` (6 steps), and the privileged window is `s^{1:N}_{t+1:t+8}` with the agent axis in
+order. A shape-only test would pass while being off by one; this would not.
+
+Also verified: the Stage 1 gate discriminates in **both** directions — it passes after 60 real
+training steps (section [3], `others=0.0047` vs `baseline=0.0073`) and correctly fails after 6 debug
+steps on random features (section [5]). That FAIL in the test output is expected and annotated.
+
+The real SigLIP encoder was exercised separately against the downloaded
+`google/siglip-base-patch16-224`: `feature_dim=768`, `image_size=224`, 17 tokens per frame, correct
+handling of both float and uint8 input, 26 KB/frame in fp16 versus 230 KB for the raw image.
+
+**Still not covered — needs your environment:**
+
+- Real demonstration data through `parse_h5_to_pkl_multi.py`.
+- `precompute_siglip_features.py` against a real multi-agent zarr (its components are tested, the
+  script itself is not).
+- Any simulator rollout: `eval_multi_cls_dp.py`'s env loop, TOPP smoothing, and success detection.
+- GPU/CUDA paths and real training dynamics.
 
 Start with `--load_num 5` and `training.debug=True` to shake out the plumbing cheaply.
 
 ---
 
-## 12. All `[REVIEW]` decisions in one place
+## 13. Bugs the tests caught
+
+All four were real and are fixed. Three would have surfaced only after you had already collected
+data and started a run.
+
+1. **numba cannot compile float16.** `batch_sample_sequence` runs in nopython mode and raised
+   `NotImplementedError: float16` on the SigLIP cache. This would have crashed on the *first
+   training batch of every run*. Fixed by widening float16 arrays to float32 once, right after
+   `copy_from_path`, so the fp16-on-disk saving is kept and numba gets a type it supports.
+2. **SigLIP text padding was left unmasked.** SigLIP's tokenizer returns only `input_ids` with no
+   attention mask, and pads with the EOS id out to `max_length`: "Open the lid." is 3 real tokens
+   followed by 61 pads. My fallback all-ones mask meant the prior's cross-attention spent its text
+   budget on padding. Measured at init: unmasked gives a text share of **0.801**, masked gives
+   **0.284** (which matches the uniform-attention baseline for ~6.5 text vs 17 image tokens). Left
+   unfixed, the Fig. 4 analysis would have measured padding count rather than grounding. Now the
+   mask is derived from `input_ids != pad_token_id`, keeping the first pad as the terminator.
+3. **`sentencepiece` missing from requirements.** `SiglipTokenizer` needs it; `transformers` does
+   not depend on it. Precompute would have failed immediately in a fresh environment.
+4. **`JsonLogger` does not create its output directory.** Hydra normally creates the run dir, so
+   this only bites when a workspace is driven programmatically. Both workspaces now `makedirs`
+   first, matching what `save_checkpoint` already does.
+
+One finding that was **not** a bug, and is worth remembering because it looks like one:
+
+- With a zero-initialised `to_out`, the cross-attention `to_q/to_k/to_v` receive **exactly zero**
+  gradient on step 0 — their gradient routes through `to_out.weight`, which is still zero. Only
+  `to_out` trains on the first step; the rest of the branch starts learning immediately after. This
+  is the standard ControlNet zero-conv behaviour. My first version of the test asserted q/k/v
+  gradient at step 0 and failed; the test now asserts the correct invariant and checks that the
+  branch trains end to end after one optimizer step.
+
+---
+
+## 14. All `[REVIEW]` decisions in one place
 
 | # | Decision | Where | Revert cost |
 |---|---|---|---|
@@ -453,7 +549,7 @@ covers the contextualizer. I defaulted Stage 1 to 100 as well.
 
 ---
 
-## 13. Runbook
+## 15. Runbook
 
 All commands run from the `robofactory/` directory, matching the existing README.
 
@@ -491,8 +587,9 @@ bash policy/Diffusion-Policy/train_cls_dp.sh LiftBarrier-rf 150 1 2 42 0
 bash policy/Diffusion-Policy/eval_cls_multi.sh \
     configs/table/lift_barrier.yaml 150 100 1 LiftBarrier-rf 10000
 
-# anytime: CPU module checks, no data or GPU needed
-python policy/Diffusion-Policy/verify_cls_dp.py
+# anytime: CPU checks, no data, no GPU, no simulator needed
+python policy/Diffusion-Policy/verify_cls_dp.py        # module math, ~2s
+python policy/Diffusion-Policy/verify_cls_pipeline.py  # end to end, ~7s
 ```
 
 Agent counts per task: LiftBarrier 2, PlaceFood 2, TwoRobotsStackCube 2, CameraAlignment 3,
@@ -507,7 +604,7 @@ action-expert is deliberately identical to it apart from the cross-attention bra
 
 ---
 
-## 14. Change log
+## 16. Change log
 
 - Extracted the paper into `CLS-DP-replication-spec.md`, including the derived parameter budget from
   Table III and the residual-KL derivation.
@@ -520,3 +617,9 @@ action-expert is deliberately identical to it apart from the cross-attention bra
 - Added `verify_cls_dp.py` and fixed everything it caught.
 - Expanded instruction templates twice: once for the 200-phrasing floor, once for grammar.
 - Added `transformers==4.49.0` to requirements.
+- Built `.venv` from system Python 3.9.6 and installed everything except the simulator, which has
+  no macOS/cp39 wheel (section 11). Added `.venv/` to `.gitignore`.
+- Added `verify_cls_pipeline.py` (69 end-to-end checks) and fixed the four bugs it and the real
+  SigLIP run surfaced: numba/float16, unmasked SigLIP text padding, missing `sentencepiece`, and
+  `JsonLogger`'s missing output directory (section 13).
+- Pinned `sentencepiece==0.2.2`.

@@ -94,6 +94,75 @@ bash policy/Diffusion-Policy/eval_multi.sh ${config_name} ${DATA_NUM} ${CHECKPOI
 # Example
 bash policy/Diffusion-Policy/eval_multi.sh configs/table/lift_barrier.yaml 150 300 1 LiftBarrier-rf
 ```
+
+## 🤝CLS-DP: Decentralized Multi-Agent Policy
+An implementation of [CLS-DP](https://arxiv.org/abs/2606.22982) (Collaborative Latent
+Space-conditioned Diffusion Policy) on top of this benchmark. Each agent runs its own policy from
+its own camera only — no shared global view, no global state, no inter-agent communication. It
+coordinates through a latent distilled from privileged multi-agent trajectories during training.
+
+Training has two stages, both run once per agent:
+
+1. **Contextualizer** — a CVAE whose posterior sees every agent's future joint trajectories and
+   whose prior sees only this agent's current RGB frame plus a shared task instruction.
+2. **Action-expert** — a diffusion policy conditioned on that latent via cross-attention.
+
+Two extra data steps are required beyond the DP pipeline above, because the contextualizer needs all
+agents time-aligned and reads cached SigLIP features.
+
+```bash
+# 0. one-time: build the instruction bank (100 train / 100 held-out eval per task)
+python script/generate_instructions.py --all
+
+# 1-2. collect demos and convert to per-agent .pkl exactly as for DP (see above)
+python script/parse_h5_to_pkl_multi.py --task_name LiftBarrier-rf --load_num 150 --agent_num 2
+
+# 3. re-pack the per-agent .pkl into one time-aligned multi-agent .zarr
+python script/parse_pkl_to_zarr_multi.py --task_name LiftBarrier-rf --load_num 150 --agent_num 2
+
+# 4. cache frozen SigLIP features into that .zarr (required, not an optimisation)
+python script/precompute_siglip_features.py \
+    --zarr_path data/zarr_data/LiftBarrier-rf_multi_150.zarr
+```
+
+Then train both stages for each agent. Stage 1 prints a PASS/FAIL gate comparing teammate
+reconstruction against a batch-mean baseline — **if it FAILs, the latent is empty and Stage 2 will
+not beat the ablation, so stop there**.
+
+```bash
+# Stage 1: contextualizer   args: task load_num agent_id n_agents seed gpu
+bash policy/Diffusion-Policy/train_cls_stage1.sh LiftBarrier-rf 150 0 2 42 0
+bash policy/Diffusion-Policy/train_cls_stage1.sh LiftBarrier-rf 150 1 2 42 0
+
+# Stage 2: action-expert
+bash policy/Diffusion-Policy/train_cls_dp.sh LiftBarrier-rf 150 0 2 42 0
+bash policy/Diffusion-Policy/train_cls_dp.sh LiftBarrier-rf 150 1 2 42 0
+
+# Evaluation (instruction sampled from the held-out half of the bank)
+bash policy/Diffusion-Policy/eval_cls_multi.sh \
+    configs/table/lift_barrier.yaml 150 100 1 LiftBarrier-rf 10000
+```
+
+Agent counts for the six benchmark tasks: `LiftBarrier` 2, `PlaceFood` 2, `TwoRobotsStackCube` 2,
+`CameraAlignment` 3, `ThreeRobotsStackCube` 3, `TakePhoto` 4.
+
+### Tests
+Both suites run on CPU in seconds and need no GPU, simulator or SigLIP download.
+```bash
+python policy/Diffusion-Policy/verify_cls_dp.py        # module math and shapes
+python policy/Diffusion-Policy/verify_cls_pipeline.py  # end to end on synthetic data
+```
+
+### Notes
+- The simulator cannot be installed on macOS: SAPIEN publishes manylinux and Windows wheels only.
+  Use Linux x86_64 with Python 3.9, where `pip install -r requirements.txt` works as written.
+- `ReplayBuffer` loads the whole dataset into RAM (~9GB per agent at 150 episodes), and the
+  intermediate `.pkl` tree is uncompressed and large. Budget memory and disk accordingly; the
+  `.pkl` tree can be deleted once the `.zarr` exists.
+- [docs/CLS-DP-replication-spec.md](docs/CLS-DP-replication-spec.md) is the paper extraction;
+  [docs/CLS-DP-implementation-notes.md](docs/CLS-DP-implementation-notes.md) records every design
+  decision, the deviations from the paper, and what is and is not verified.
+
 ## 🔗Community & Contact
 For any questions or research collaboration opportunities, please don't hesitate to reach out：yiranqin@link.cuhk.edu.cn, faceong02@gmail.com, akikaze@sjtu.edu.cn.
 
