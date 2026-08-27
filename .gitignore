@@ -60,3 +60,5 @@ imgui.ini
 htmlcov/
 
 !robofactory/assets/.gitkeep
+# local virtualenv
+.venv/
