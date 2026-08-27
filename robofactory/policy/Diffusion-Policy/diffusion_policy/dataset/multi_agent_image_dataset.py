@@ -115,6 +115,14 @@ class MultiAgentImageDataset(BaseImageDataset):
 
         self.replay_buffer = ReplayBuffer.copy_from_path(zarr_path, keys=keys)
 
+        # The SigLIP cache is stored as float16 to keep it off disk cheaply, but the numba
+        # batch sampler compiles in nopython mode and has no float16 data model
+        # (`NotImplementedError: float16`). Widen to float32 once, here, rather than paying
+        # for it on disk.
+        for key, array in list(self.replay_buffer.data.items()):
+            if array.dtype == np.float16:
+                self.replay_buffer.data[key] = array.astype(np.float32)
+
         # ------------------------------------------------------------ splits
         val_mask = get_val_mask(
             n_episodes=self.replay_buffer.n_episodes, val_ratio=val_ratio, seed=seed

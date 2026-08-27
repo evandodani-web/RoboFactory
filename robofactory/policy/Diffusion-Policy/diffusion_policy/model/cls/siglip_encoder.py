@@ -143,7 +143,22 @@ class SigLIPFeatureExtractor(nn.Module):
         input_ids = encoded["input_ids"].to(self._device)
         mask = encoded.get("attention_mask")
         if mask is None:
-            mask = torch.ones_like(input_ids)
+            # SigLIP's tokenizer emits input_ids only, and pads with the EOS id (1) out to
+            # max_length -- "Open the lid." is 3 real tokens followed by 61 pads. Falling
+            # back to an all-ones mask would make the prior's cross-attention spend most of
+            # its text budget on padding, and would make the Fig. 4 text-vs-image split a
+            # measure of padding count rather than content. Derive a real mask instead,
+            # keeping the content tokens plus the first pad, which doubles as the sentence
+            # terminator.
+            pad_id = self.tokenizer.pad_token_id
+            if pad_id is None:
+                mask = torch.ones_like(input_ids)
+            else:
+                n_content = (input_ids != pad_id).sum(dim=1, keepdim=True)
+                positions = torch.arange(
+                    input_ids.shape[1], device=input_ids.device
+                ).unsqueeze(0)
+                mask = (positions <= n_content).long()
         mask = mask.to(self._device).float()
 
         # SigLIP's text tower is trained with fixed-length padding and full attention, so

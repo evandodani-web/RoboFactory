@@ -8,5 +8,7 @@ torch==2.6.0
 torchvision==0.21.0
 pandas==2.2.3
 numba==0.60.0
-# CLS-DP: frozen SigLIP encoders for the contextualizer
+# CLS-DP: frozen SigLIP encoders for the contextualizer.
+# sentencepiece is required by SiglipTokenizer; transformers does not pull it in.
 transformers==4.49.0
+sentencepiece==0.2.2

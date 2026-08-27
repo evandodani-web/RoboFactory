@@ -163,6 +163,9 @@ class CLSRobotWorkspace(BaseWorkspace):
             cfg.training.val_every = 1
             cfg.training.sample_every = 1
 
+        # Hydra normally creates the run dir, but JsonLogger will not; create it so the
+        # workspace can also be driven programmatically (mirrors save_checkpoint).
+        os.makedirs(self.output_dir, exist_ok=True)
         log_path = os.path.join(self.output_dir, "logs.json.txt")
         with JsonLogger(log_path) as json_logger:
             for _ in range(cfg.training.num_epochs):

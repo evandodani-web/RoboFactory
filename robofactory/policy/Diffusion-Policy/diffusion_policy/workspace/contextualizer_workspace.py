@@ -104,6 +104,9 @@ class ContextualizerWorkspace(BaseWorkspace):
             )
 
         step_log = dict()
+        # Hydra normally creates the run dir, but JsonLogger will not; create it so the
+        # workspace can also be driven programmatically (mirrors save_checkpoint).
+        os.makedirs(self.output_dir, exist_ok=True)
         log_path = os.path.join(self.output_dir, "logs.json.txt")
         with JsonLogger(log_path) as json_logger:
             for _ in range(cfg.training.num_epochs):
