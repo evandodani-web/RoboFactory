@@ -371,9 +371,11 @@ Per Table I:
 
 `horizon=8`, `n_obs_steps=3`, `K=100`, ResNet-18, FiLM and `lr=1e-4` already match the paper exactly.
 
-**`[REVIEW]` Optimizer.** Table I says "Adam". The repo's DP uses `AdamW` with `weight_decay=1e-6`,
-which is very nearly Adam. I kept `AdamW` so that CLS-DP and the `w/o CLS` ablation differ *only* in
-the collaborative latent. Swap to `torch.optim.Adam` in the configs if you want the literal reading.
+**`[REVIEW]` Optimizer.** Table I / §V-A say "Adam". The repo's DP uses `AdamW` with
+`weight_decay=1e-6`, which is very nearly Adam. CLS-DP keeps `AdamW` so that it and the
+`w/o CLS` ablation differ *only* in the collaborative latent. **Use AdamW for future
+runs.** Swap `optimizer._target_` to `torch.optim.Adam` in `cls_stage1.yaml` and
+`cls_dp.yaml` only if you want the literal paper reading.
 
 ---
 
@@ -546,7 +548,7 @@ One finding that was **not** a bug, and is worth remembering because it looks li
 | 8 | Zero-init cross-attention output projections | section 7 | low |
 | 9 | `n_cond_tokens = 4` | section 7 | low |
 | 10 | `latent_sample: true` at inference | section 8 | low, config flag |
-| 11 | `AdamW` retained rather than literal `Adam` | section 9 | low |
+| 11 | `AdamW` retained rather than literal `Adam` (use AdamW for future runs) | section 9 | low |
 | 12 | One contextualizer per agent (not weight-shared) | below | high |
 | 13 | Stage 1 also runs 100 epochs | below | low |
 

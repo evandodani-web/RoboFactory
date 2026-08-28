@@ -164,6 +164,11 @@ python policy/Diffusion-Policy/verify_cls_pipeline.py  # end to end on synthetic
 ```
 
 ### Notes
+- **Optimizer:** the paper trains with Adam (§V-A). These CLS configs use
+  `torch.optim.AdamW` (`weight_decay=1e-6`) so CLS-DP and the `w/o CLS` ablation
+  differ only in the collaborative latent. **Use AdamW for future runs.** To match
+  the paper literally, set `optimizer._target_` to `torch.optim.Adam` in
+  `cls_stage1.yaml` and `cls_dp.yaml`.
 - Recreate the env from scratch with `bash setup_uv.sh --force` or `uv sync --python 3.9`.
   Commit `uv.lock`; do not hand-edit `.venv` and treat it as the recipe.
 - The simulator cannot be installed on macOS: SAPIEN publishes manylinux and Windows wheels only.

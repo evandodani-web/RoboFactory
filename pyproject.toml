@@ -17,9 +17,10 @@ dependencies = [
     "pandas==2.2.3",
     "numba==0.60.0",
     # CLS-DP: frozen SigLIP encoders for the contextualizer.
-    # sentencepiece is required by SiglipTokenizer; transformers does not pull it in.
+    # sentencepiece and protobuf are required by SiglipTokenizer; transformers does not pull them in.
     "transformers==4.49.0",
     "sentencepiece==0.2.2",
+    "protobuf>=4.25,<6",
     # SAPIEN still imports pkg_resources; setuptools 82 removed it.
     "setuptools>=70,<81",
 ]
