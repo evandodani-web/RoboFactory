@@ -11,7 +11,7 @@
 #   python script/generate_instructions.py --all
 #   python script/parse_h5_to_pkl_multi.py --task_name ${task_name} --load_num N --agent_num N_AGENTS
 #   python script/parse_pkl_to_zarr_multi.py --task_name ${task_name} --load_num N --agent_num N_AGENTS
-#   python script/precompute_siglip_features.py --zarr_path data/zarr_data/${task_name}_multi_N.zarr
+#   python script/precompute_siglip_features.py --zarr_path data/zarr_data/${task_name}_multi_N.zarr --pool_grid 14
 set -euo pipefail
 
 task_name=${1}

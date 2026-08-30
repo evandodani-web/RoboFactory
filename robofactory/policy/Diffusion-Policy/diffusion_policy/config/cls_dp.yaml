@@ -119,7 +119,8 @@ val_dataloader:
   persistent_workers: False
 
 optimizer:
-  _target_: torch.optim.AdamW
+  # Study B: paper Table I / §V-A specify Adam. Study A used AdamW.
+  _target_: torch.optim.Adam
   lr: 1.0e-4
   betas: [0.95, 0.999]
   eps: 1.0e-8

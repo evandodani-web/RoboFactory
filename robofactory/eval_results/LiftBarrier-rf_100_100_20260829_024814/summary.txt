@@ -1,0 +1,4 @@
+task: LiftBarrier-rf
+demos: 100  checkpoint: 100
+seeds: 1000..1099
+total: 100  success: 37  success_rate: 37.0%

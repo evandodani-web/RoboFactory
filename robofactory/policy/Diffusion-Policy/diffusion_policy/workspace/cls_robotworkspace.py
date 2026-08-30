@@ -5,7 +5,7 @@ Mirrors RobotWorkspace, with three differences:
   1. The frozen contextualizer prior is loaded from the Stage 1 checkpoint *before* the EMA
      copy is taken, so both models start from identical prior weights.
   2. The optimizer only ever sees parameters with requires_grad=True, so the frozen prior
-     never reaches AdamW.
+     never reaches Adam.
   3. Batches carry the prior's SigLIP token inputs alongside obs/action.
 """
 

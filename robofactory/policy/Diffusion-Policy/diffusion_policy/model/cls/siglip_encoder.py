@@ -9,10 +9,9 @@ This module is deliberately never a submodule of a trained policy. Keeping SigLI
 the saved model keeps checkpoints at ~20MB instead of ~800MB, and means dataloader workers
 never need a GPU. The trainable PriorNet consumes cached token features instead.
 
-Patch tokens are average-pooled from the native 14x14 grid down to a coarse grid (4x4 by
-default) before caching. Caching all 196 patch tokens would cost ~300KB/frame in fp16,
-which is larger than the source image; 4x4 plus the pooled embedding is ~26KB/frame while
-still giving the fusion cross-attention real spatial structure to attend over.
+Patch tokens keep the native 14x14 grid by default (Study B). Study A average-pooled that
+grid to 4x4 to save cache space; `pool_grid` still accepts a coarser size if you need it.
+The cached tensor is the pooled embedding plus the grid: 1 + pool_grid^2 tokens.
 """
 
 import torch
@@ -34,7 +33,7 @@ class SigLIPFeatureExtractor(nn.Module):
         model_name: str = DEFAULT_MODEL_NAME,
         device: str = "cuda",
         dtype: torch.dtype = torch.float16,
-        pool_grid: int = 4,
+        pool_grid: int = 14,
         text_max_length: int = 64,
     ):
         super().__init__()
@@ -74,7 +73,7 @@ class SigLIPFeatureExtractor(nn.Module):
 
     @property
     def n_image_tokens(self) -> int:
-        """Pooled embedding plus the coarse patch grid."""
+        """Pooled embedding plus the (possibly coarsened) patch grid."""
         return 1 + self.pool_grid * self.pool_grid
 
     def train(self, mode: bool = True):
@@ -91,7 +90,7 @@ class SigLIPFeatureExtractor(nn.Module):
 
         Returns:
             (B, 1 + pool_grid^2, feature_dim) float32 tensor. Index 0 is the attention
-            pooled embedding; the remainder is the pooled patch grid in row-major order.
+            pooled embedding; the remainder is the patch grid in row-major order.
         """
         if images.dtype == torch.uint8:
             images = images.float() / 255.0

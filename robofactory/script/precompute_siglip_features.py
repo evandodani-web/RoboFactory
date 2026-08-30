@@ -48,7 +48,7 @@ def main():
     parser.add_argument("--model_name", type=str, default=DEFAULT_MODEL_NAME)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--pool_grid", type=int, default=4)
+    parser.add_argument("--pool_grid", type=int, default=14)
     parser.add_argument("--text_max_length", type=int, default=64)
     parser.add_argument(
         "--overwrite",

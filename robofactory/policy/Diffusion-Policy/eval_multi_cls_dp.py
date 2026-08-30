@@ -70,7 +70,7 @@ class Args:
     """Pin a specific instruction instead of sampling one."""
 
     siglip_model: str = DEFAULT_MODEL_NAME
-    siglip_pool_grid: int = 4
+    siglip_pool_grid: int = 14
 
     latent_sample: Optional[bool] = None
     """Override the checkpoint's latent_sample. True marginalises over z (Eq. 12)."""
