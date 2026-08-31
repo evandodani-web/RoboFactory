@@ -727,3 +727,13 @@ together, so this run cannot isolate which one closed (or failed to close) the 2
 Same task (LiftBarrier), same seeds, same 100-epoch schedule, same instruction bank. Stage 1
 must still print PASS on the teammate-reconstruction gate before Stage 2 starts.
 
+LiftBarrier Study B eval: **61 / 100**, matching Table II.
+
+### Study B — ThreeRobotsStackCube (in progress)
+
+Same recipe, new task. Paper Table II is **20%** on this 3-agent stack. Official HuggingFace
+demos (`FACEONG/RoboFactory_Dataset/ThreeRobotsStackCube`, 150 trajectories). Checkpoints
+`checkpoints/ThreeRobotsStackCube-rf_{ctx,clsdp}_Agent{0,1,2}_150/`. Eval uses
+`max_steps=800` (the env horizon) and the same 100 unseen seeds / held-out instructions.
+Pipeline: `policy/Diffusion-Policy/train_eval_three_robots_stack_cube.sh`.
+

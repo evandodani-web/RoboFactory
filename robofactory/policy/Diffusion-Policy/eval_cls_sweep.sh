@@ -7,9 +7,9 @@
 # ~2GB of GPU, so throughput is set by cores, not by the GPU.
 #
 # Usage:
-#   bash policy/Diffusion-Policy/eval_cls_sweep.sh TASK_NAME CONFIG DATA_NUM CKPT [SEED_START] [SEED_END] [JOBS]
+#   bash policy/Diffusion-Policy/eval_cls_sweep.sh TASK_NAME CONFIG DATA_NUM CKPT [SEED_START] [SEED_END] [JOBS] [MAX_STEPS]
 # Example:
-#   bash policy/Diffusion-Policy/eval_cls_sweep.sh LiftBarrier-rf configs/table/lift_barrier.yaml 100 100
+#   bash policy/Diffusion-Policy/eval_cls_sweep.sh LiftBarrier-rf configs/table/lift_barrier.yaml 150 100
 set -euo pipefail
 
 TASK_NAME=${1}
@@ -19,6 +19,7 @@ CKPT=${4}
 SEED_START=${5:-1000}
 SEED_END=${6:-1099}
 JOBS=${7:-10}
+MAX_STEPS=${8:-250}
 
 REPO_ROOT=/workspace/RoboFactory
 cd "${REPO_ROOT}/robofactory"
@@ -37,7 +38,7 @@ mkdir -p "${RUN_DIR}/logs"
 RESULTS="${RUN_DIR}/results.csv"
 echo "seed,success" > "${RESULTS}"
 
-echo "task=${TASK_NAME} data_num=${DATA_NUM} ckpt=${CKPT}"
+echo "task=${TASK_NAME} data_num=${DATA_NUM} ckpt=${CKPT} max_steps=${MAX_STEPS}"
 echo "seeds ${SEED_START}..${SEED_END} across ${JOBS} parallel workers"
 echo "results -> ${RUN_DIR}"
 
@@ -56,6 +57,8 @@ run_seed() {
         --sim-backend cpu \
         --num-envs 1 \
         --instruction-split eval \
+        --siglip-pool-grid 14 \
+        --max-steps "${MAX_STEPS}" \
         --quiet \
         --record-dir "./eval_video/{env_id}" > "${log}" 2>&1
     set -e
@@ -71,7 +74,7 @@ run_seed() {
     echo "seed ${seed} -> ${ok}"
 }
 export -f run_seed
-export TASK_NAME CONFIG DATA_NUM CKPT REPO_ROOT RUN_DIR RESULTS
+export TASK_NAME CONFIG DATA_NUM CKPT REPO_ROOT RUN_DIR RESULTS MAX_STEPS
 
 seq "${SEED_START}" "${SEED_END}" | xargs -P "${JOBS}" -I{} bash -c 'run_seed {}'
 

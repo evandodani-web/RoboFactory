@@ -165,8 +165,10 @@ python policy/Diffusion-Policy/verify_cls_pipeline.py  # end to end on synthetic
 
 ### Notes
 - **Study B (current):** 150 demos, Adam (paper Table I / §V-A), full 14×14 SigLIP
-  patch grid (197 tokens). This is the paper-matching setup. Checkpoints are
-  `*_150`. See [docs/CLS-DP-implementation-notes.md](docs/CLS-DP-implementation-notes.md)
+  patch grid (197 tokens). LiftBarrier eval hit the paper's **61%**. The same
+  recipe is now running on `ThreeRobotsStackCube` (3 agents; paper 20%).
+  Checkpoints are `*_150`. See
+  [docs/CLS-DP-implementation-notes.md](docs/CLS-DP-implementation-notes.md)
   section 17.
 - **Study A (done):** 100 demos, AdamW, 4×4 pooled SigLIP (17 tokens). LiftBarrier
   eval was 37/100. Checkpoints `*_100` and
