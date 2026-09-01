@@ -419,16 +419,17 @@ def test_action_expert(ds2, contextualizer):
 
 
 def load_cfg(name, zarr_path, overrides):
+    """Compose through Hydra, so the defaults lists in the *_det configs are honoured."""
+    from hydra import compose, initialize_config_dir
+
     cfg_dir = os.path.join(HERE, "diffusion_policy", "config")
-    root = OmegaConf.load(os.path.join(cfg_dir, name))
-    task = OmegaConf.load(os.path.join(cfg_dir, "task", "cls_task.yaml"))
-    cfg = OmegaConf.merge(root, OmegaConf.create({"task": task}))
-    cfg.merge_with_dotlist(
-        [f"task_name={TASK}", f"n_agents={N_AGENTS}", f"data_num={N_EPISODES}",
-         f"task.dataset.zarr_path={zarr_path}", "training.debug=True",
-         "training.device=cpu", "training.resume=False"] + overrides
-    )
-    return cfg
+    base = [
+        f"task_name={TASK}", f"n_agents={N_AGENTS}", f"data_num={N_EPISODES}",
+        f"task.dataset.zarr_path={zarr_path}", "training.debug=True",
+        "training.device=cpu", "training.resume=False",
+    ]
+    with initialize_config_dir(config_dir=cfg_dir, version_base=None):
+        return compose(config_name=name.replace(".yaml", ""), overrides=base + overrides)
 
 
 def test_workspaces(workdir, zarr_path):
@@ -501,6 +502,114 @@ def test_workspaces(workdir, zarr_path):
     rebuilt = CLSRobotWorkspace(saved, output_dir=out2)
     rebuilt.load_payload(payload)
     check("checkpoint round-trips without the Stage 1 file", True)
+
+
+DET_CTX_OVERRIDES = [
+    "contextualizer.prior_net.d_model=64", "contextualizer.prior_net.n_layers=1",
+    "contextualizer.prior_net.n_heads=4", "contextualizer.prior_net.dim_feedforward=128",
+    "contextualizer.ma_encoder.d_model=64", "contextualizer.ma_encoder.n_layers=1",
+    "contextualizer.ma_encoder.n_heads=4", "contextualizer.ma_encoder.dim_feedforward=128",
+    "contextualizer.ma_decoder.d_model=64", "contextualizer.ma_decoder.n_layers=1",
+    "contextualizer.ma_decoder.n_heads=4", "contextualizer.ma_decoder.dim_feedforward=128",
+    f"feature_dim={FEATURE_DIM}", f"latent_dim={LATENT_DIM}", "agent_id=0",
+    f"dataloader.batch_size={BATCH}", f"val_dataloader.batch_size={BATCH}",
+]
+
+
+def test_deterministic_variant(workdir, zarr_path):
+    """Drive the deterministic variant through both real _det configs."""
+    print("\n[7] Deterministic variant, end to end")
+    from diffusion_policy.workspace.cls_robotworkspace import CLSRobotWorkspace
+    from diffusion_policy.workspace.contextualizer_workspace import ContextualizerWorkspace
+
+    cwd = os.getcwd()
+
+    cfg1 = load_cfg("cls_stage1_det", zarr_path, DET_CTX_OVERRIDES)
+    check("det Stage 1 config resolves", cfg1.contextualizer.deterministic is True)
+    check("det checkpoint prefix is distinct", "ctxdet" in cfg1.checkpoint_name,
+          cfg1.checkpoint_name)
+
+    ws1 = ContextualizerWorkspace(cfg1, output_dir=os.path.join(workdir, "out_det1"))
+    check("no scale parameters were built",
+          ws1.model.prior_net.to_log_sigma is None
+          and ws1.model.ma_encoder.to_log_sigma is None)
+
+    os.chdir(workdir)
+    try:
+        ws1.run()
+    finally:
+        os.chdir(cwd)
+    det_ctx = os.path.join(
+        workdir, "checkpoints", f"{TASK}_ctxdet_Agent0_{N_EPISODES}", "1.ckpt"
+    )
+    check("det Stage 1 wrote a checkpoint", os.path.isfile(det_ctx))
+
+    det_policy_overrides = [
+        "policy.prior_net.d_model=64", "policy.prior_net.n_layers=1",
+        "policy.prior_net.n_heads=4", "policy.prior_net.dim_feedforward=128",
+        f"feature_dim={FEATURE_DIM}", f"latent_dim={LATENT_DIM}", "agent_id=0",
+        f"dataloader.batch_size={BATCH}", f"val_dataloader.batch_size={BATCH}",
+        "policy.down_dims=[32,64]", "policy.diffusion_step_embed_dim=32",
+        "policy.kernel_size=3", "policy.n_cond_tokens=2", "policy.cond_token_dim=32",
+        "policy.cross_attn_heads=2", "policy.num_inference_steps=3",
+        "policy.noise_scheduler.num_train_timesteps=20",
+        f"contextualizer_ckpt={det_ctx}",
+        f"task.shape_meta.obs.head_cam.shape=[3,{IMG_H},{IMG_W}]",
+    ]
+    cfg2 = load_cfg("cls_dp_det", zarr_path, det_policy_overrides)
+    check("det Stage 2 disables sampling", cfg2.policy.latent_sample is False)
+    check("det Stage 2 prefix is distinct", "clsdpdet" in cfg2.checkpoint_name,
+          cfg2.checkpoint_name)
+
+    ws2 = CLSRobotWorkspace(cfg2, output_dir=os.path.join(workdir, "out_det2"))
+    check("det Stage 2 loaded the det prior", True)
+
+    # The whole point of the variant: identical inputs must give an identical latent.
+    batch = build_stage2_batch(zarr_path)
+    prior_inputs = {k: batch[k] for k in
+                    ("prior_image_tokens", "prior_text_tokens", "prior_text_mask")}
+    with torch.no_grad():
+        z_a = ws2.model.resolve_latent(prior_inputs)
+        z_b = ws2.model.resolve_latent(prior_inputs)
+    check("latent is exactly repeatable", torch.equal(z_a, z_b))
+    ws2.model.latent_sample = True  # must be ignored: there is no scale head to sample
+    with torch.no_grad():
+        z_c = ws2.model.resolve_latent(prior_inputs)
+    check("latent_sample=True cannot reintroduce noise", torch.equal(z_a, z_c))
+    ws2.model.latent_sample = False
+
+    os.chdir(workdir)
+    try:
+        ws2.run()
+    finally:
+        os.chdir(cwd)
+    det_pol = os.path.join(
+        workdir, "checkpoints", f"{TASK}_clsdpdet_Agent0_{N_EPISODES}", "1.ckpt"
+    )
+    check("det Stage 2 wrote a checkpoint", os.path.isfile(det_pol))
+
+    # Safety net: pairing a stochastic Stage 1 with a deterministic Stage 2 must fail
+    # loudly rather than silently dropping the scale head.
+    stochastic_ctx = os.path.join(
+        workdir, "checkpoints", f"{TASK}_ctx_Agent0_{N_EPISODES}", "1.ckpt"
+    )
+    if os.path.isfile(stochastic_ctx):
+        mismatched = load_cfg(
+            "cls_dp_det", zarr_path,
+            [o for o in det_policy_overrides if not o.startswith("contextualizer_ckpt")]
+            + [f"contextualizer_ckpt={stochastic_ctx}"],
+        )
+        try:
+            CLSRobotWorkspace(mismatched, output_dir=os.path.join(workdir, "out_bad"))
+            raised = False
+        except RuntimeError:
+            raised = True
+        check("mismatched stochastic/deterministic pairing is rejected", raised)
+
+
+def build_stage2_batch(zarr_path):
+    ds = build_dataset(zarr_path, stage=2)
+    return ds.postprocess(ds[np.arange(BATCH)], torch.device("cpu"))
 
 
 def test_eval_script(workdir):
@@ -593,6 +702,7 @@ def main():
         contextualizer = test_contextualizer(ds1)
         test_action_expert(ds2, contextualizer)
         test_workspaces(workdir, zarr_path)
+        test_deterministic_variant(workdir, zarr_path)
         test_eval_script(workdir)
         print(f"\nALL {len(PASSED)} PIPELINE CHECKS PASSED\n")
     finally:

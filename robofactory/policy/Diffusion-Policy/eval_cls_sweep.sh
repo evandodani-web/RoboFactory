@@ -7,9 +7,11 @@
 # ~2GB of GPU, so throughput is set by cores, not by the GPU.
 #
 # Usage:
-#   bash policy/Diffusion-Policy/eval_cls_sweep.sh TASK_NAME CONFIG DATA_NUM CKPT [SEED_START] [SEED_END] [JOBS] [MAX_STEPS]
-# Example:
+#   bash policy/Diffusion-Policy/eval_cls_sweep.sh TASK_NAME CONFIG DATA_NUM CKPT [SEED_START] [SEED_END] [JOBS] [MAX_STEPS] [CKPT_PREFIX]
+# Example (reproduced baseline):
 #   bash policy/Diffusion-Policy/eval_cls_sweep.sh LiftBarrier-rf configs/table/lift_barrier.yaml 150 100
+# Example (deterministic-latent variant):
+#   bash policy/Diffusion-Policy/eval_cls_sweep.sh LiftBarrier-rf configs/table/lift_barrier.yaml 150 100 1000 1099 10 250 clsdpdet
 set -euo pipefail
 
 TASK_NAME=${1}
@@ -20,6 +22,8 @@ SEED_START=${5:-1000}
 SEED_END=${6:-1099}
 JOBS=${7:-10}
 MAX_STEPS=${8:-250}
+# Which checkpoint family to evaluate: clsdp (baseline) or clsdpdet (deterministic).
+CKPT_PREFIX=${9:-clsdp}
 
 REPO_ROOT=/workspace/RoboFactory
 cd "${REPO_ROOT}/robofactory"
@@ -33,12 +37,13 @@ export OMP_NUM_THREADS=8
 export MKL_NUM_THREADS=8
 
 STAMP=$(date +"%Y%m%d_%H%M%S")
-RUN_DIR="eval_results/${TASK_NAME}_${DATA_NUM}_${CKPT}_${STAMP}"
+# Prefix is part of the run dir so baseline and variant results never overwrite.
+RUN_DIR="eval_results/${TASK_NAME}_${CKPT_PREFIX}_${DATA_NUM}_${CKPT}_${STAMP}"
 mkdir -p "${RUN_DIR}/logs"
 RESULTS="${RUN_DIR}/results.csv"
 echo "seed,success" > "${RESULTS}"
 
-echo "task=${TASK_NAME} data_num=${DATA_NUM} ckpt=${CKPT} max_steps=${MAX_STEPS}"
+echo "task=${TASK_NAME} variant=${CKPT_PREFIX} data_num=${DATA_NUM} ckpt=${CKPT} max_steps=${MAX_STEPS}"
 echo "seeds ${SEED_START}..${SEED_END} across ${JOBS} parallel workers"
 echo "results -> ${RUN_DIR}"
 
@@ -57,6 +62,7 @@ run_seed() {
         --sim-backend cpu \
         --num-envs 1 \
         --instruction-split eval \
+        --ckpt-prefix "${CKPT_PREFIX}" \
         --siglip-pool-grid 14 \
         --max-steps "${MAX_STEPS}" \
         --quiet \
@@ -74,7 +80,7 @@ run_seed() {
     echo "seed ${seed} -> ${ok}"
 }
 export -f run_seed
-export TASK_NAME CONFIG DATA_NUM CKPT REPO_ROOT RUN_DIR RESULTS MAX_STEPS
+export TASK_NAME CONFIG DATA_NUM CKPT REPO_ROOT RUN_DIR RESULTS MAX_STEPS CKPT_PREFIX
 
 seq "${SEED_START}" "${SEED_END}" | xargs -P "${JOBS}" -I{} bash -c 'run_seed {}'
 
@@ -84,6 +90,7 @@ RATE=$(awk -v s="${SUCCESS}" -v t="${TOTAL}" 'BEGIN {if (t>0) printf "%.1f", 100
 
 {
     echo "task: ${TASK_NAME}"
+    echo "variant: ${CKPT_PREFIX}"
     echo "demos: ${DATA_NUM}  checkpoint: ${CKPT}"
     echo "seeds: ${SEED_START}..${SEED_END}"
     echo "total: ${TOTAL}  success: ${SUCCESS}  success_rate: ${RATE}%"

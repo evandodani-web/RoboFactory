@@ -78,11 +78,15 @@ class PriorNet(nn.Module):
         n_query: int = 1,
         log_sigma_min: float = -5.0,
         log_sigma_max: float = 2.0,
+        deterministic: bool = False,
     ):
         super().__init__()
         self.latent_dim = latent_dim
         self.log_sigma_min = log_sigma_min
         self.log_sigma_max = log_sigma_max
+        # Deterministic variant: emit z directly, with no scale head at all. forward()
+        # then returns log_sigma=None and every downstream consumer skips sampling.
+        self.deterministic = deterministic
 
         self.text_proj = nn.Linear(feature_dim, d_model)
         self.image_proj = nn.Linear(feature_dim, d_model)
@@ -98,12 +102,15 @@ class PriorNet(nn.Module):
         )
         self.norm_out = nn.LayerNorm(d_model)
         self.to_mu = nn.Linear(d_model, latent_dim)
-        self.to_log_sigma = nn.Linear(d_model, latent_dim)
 
-        # Start at sigma_rho = 1 so that, combined with the zero-initialised residual head
-        # in MAKinematicsEncoder, the KL term begins at exactly zero.
-        nn.init.zeros_(self.to_log_sigma.weight)
-        nn.init.zeros_(self.to_log_sigma.bias)
+        if deterministic:
+            self.to_log_sigma = None
+        else:
+            self.to_log_sigma = nn.Linear(d_model, latent_dim)
+            # Start at sigma_rho = 1 so that, combined with the zero-initialised residual
+            # head in MAKinematicsEncoder, the KL term begins at exactly zero.
+            nn.init.zeros_(self.to_log_sigma.weight)
+            nn.init.zeros_(self.to_log_sigma.bias)
 
     def forward(self, image_tokens, text_tokens, text_mask=None, return_attn=False):
         """
@@ -115,7 +122,7 @@ class PriorNet(nn.Module):
 
         Returns:
             mu:        (B, latent_dim)
-            log_sigma: (B, latent_dim)
+            log_sigma: (B, latent_dim), or None in the deterministic variant
             info:      dict, populated only when return_attn is True
         """
         batch_size = image_tokens.shape[0]
@@ -146,9 +153,12 @@ class PriorNet(nn.Module):
 
         pooled = self.norm_out(queries).mean(dim=1)
         mu = self.to_mu(pooled)
-        log_sigma = self.to_log_sigma(pooled).clamp(
-            self.log_sigma_min, self.log_sigma_max
-        )
+        if self.to_log_sigma is None:
+            log_sigma = None
+        else:
+            log_sigma = self.to_log_sigma(pooled).clamp(
+                self.log_sigma_min, self.log_sigma_max
+            )
 
         info = {}
         if return_attn and attn_accumulator:

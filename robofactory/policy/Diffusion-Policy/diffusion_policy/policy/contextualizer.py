@@ -40,6 +40,22 @@ def _residual_kl(log_sigma_prior, mu_residual, log_sigma_posterior):
     return per_dim.sum(dim=-1)
 
 
+def _residual_l2(mu_residual):
+    """Alignment term for the deterministic variant. Per-sample, shape (B,).
+
+    This is exactly `_residual_kl` in the unit-variance limit: substituting
+    sigma_prior = sigma_posterior = 1 collapses the Gaussian KL to
+
+        0.5 * ||mu_E||^2
+
+    so the deterministic variant is not a different objective, it is the same one with
+    the scale parameters frozen out. Crucially the distillation geometry survives: the
+    alignment term still depends only on the residual, so the prior output receives no
+    gradient from it and is trained purely by reconstruction.
+    """
+    return 0.5 * (mu_residual**2).sum(dim=-1)
+
+
 class Contextualizer(ModuleAttrMixin):
     def __init__(
         self,
@@ -49,6 +65,7 @@ class Contextualizer(ModuleAttrMixin):
         agent_id: int = 0,
         n_agents: int = 2,
         latent_dim: int = 256,
+        deterministic: bool = False,
     ):
         super().__init__()
         self.prior_net = prior_net
@@ -57,6 +74,10 @@ class Contextualizer(ModuleAttrMixin):
         self.agent_id = agent_id
         self.n_agents = n_agents
         self.latent_dim = latent_dim
+        # When True the encoders emit z directly, no reparameterization happens anywhere,
+        # and the KL is replaced by its unit-variance limit (see _residual_l2). Must match
+        # the `deterministic` flag on prior_net and ma_encoder.
+        self.deterministic = deterministic
         self.normalizer = LinearNormalizer()
 
     def set_normalizer(self, normalizer: LinearNormalizer):
@@ -76,10 +97,10 @@ class Contextualizer(ModuleAttrMixin):
         mu, log_sigma, info = self.prior_distribution(
             image_tokens, text_tokens, text_mask=text_mask, return_attn=return_attn
         )
-        if sample:
-            latent = mu + torch.exp(log_sigma) * torch.randn_like(mu)
-        else:
+        if log_sigma is None or not sample:
             latent = mu
+        else:
+            latent = mu + torch.exp(log_sigma) * torch.randn_like(mu)
         return latent, info
 
     # ----------------------------------------------------------------- training
@@ -104,7 +125,14 @@ class Contextualizer(ModuleAttrMixin):
         mu_residual, log_sigma_posterior = self.ma_encoder(future)
 
         mu = mu_prior + mu_residual
-        latent = mu + torch.exp(log_sigma_posterior) * torch.randn_like(mu)
+        if self.deterministic:
+            latent = mu
+            alignment = _residual_l2(mu_residual).mean()
+        else:
+            latent = mu + torch.exp(log_sigma_posterior) * torch.randn_like(mu)
+            alignment = _residual_kl(
+                log_sigma_prior, mu_residual, log_sigma_posterior
+            ).mean()
 
         reconstruction = self.ma_decoder(own_state, latent)
 
@@ -112,14 +140,15 @@ class Contextualizer(ModuleAttrMixin):
         # ||.||_2^2 over (N, F, state_dim), averaged across the batch
         recon_loss = squared_error.sum(dim=(1, 2, 3)).mean()
 
-        kl = _residual_kl(log_sigma_prior, mu_residual, log_sigma_posterior).mean()
-        loss = beta * kl + recon_loss
+        loss = beta * alignment + recon_loss
 
         with torch.no_grad():
             metrics = self._diagnostics(squared_error, future, mu_residual,
                                         log_sigma_prior, log_sigma_posterior)
+            # Key stays `ctx_kl` in both variants so the logging and gate code is shared;
+            # in the deterministic variant it holds the L2 alignment term.
             metrics["ctx_loss"] = loss.item()
-            metrics["ctx_kl"] = kl.item()
+            metrics["ctx_kl"] = alignment.item()
             metrics["ctx_recon"] = recon_loss.item()
             metrics["ctx_beta"] = beta
 
@@ -150,11 +179,18 @@ class Contextualizer(ModuleAttrMixin):
             per_element_others = 0.0
             baseline_others = 0.0
 
+        # The deterministic variant has no scale parameters; report 1.0 (their implied
+        # value) so the key set stays identical and the epoch-averaging code is shared.
+        sigma_prior = 1.0 if log_sigma_prior is None else torch.exp(log_sigma_prior).mean().item()
+        sigma_post = (
+            1.0 if log_sigma_posterior is None else torch.exp(log_sigma_posterior).mean().item()
+        )
+
         return {
             "ctx_recon_own": per_element_own,
             "ctx_recon_others": per_element_others,
             "ctx_recon_others_baseline": baseline_others,
             "ctx_mu_residual_norm": mu_residual.norm(dim=-1).mean().item(),
-            "ctx_sigma_prior": torch.exp(log_sigma_prior).mean().item(),
-            "ctx_sigma_posterior": torch.exp(log_sigma_posterior).mean().item(),
+            "ctx_sigma_prior": sigma_prior,
+            "ctx_sigma_posterior": sigma_post,
         }

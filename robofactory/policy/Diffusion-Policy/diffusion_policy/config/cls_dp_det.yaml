@@ -1,0 +1,25 @@
+# CLS-DP Stage 2, DETERMINISTIC variant.
+#
+# Inherits everything from cls_dp.yaml and overrides only the stochasticity. The frozen
+# prior emits z directly, so there is no distribution to sample from at training time or
+# at deployment.
+#
+# prior_net.deterministic MUST match the Stage 1 config: the architectures have to be
+# identical or CLSRobotWorkspace._load_prior_weights raises on unexpected/missing keys.
+# That check is the safety net against pairing a stochastic Stage 1 with this Stage 2.
+#
+# Launch with policy/Diffusion-Policy/train_cls_dp_det.sh
+defaults:
+  - cls_dp
+  - _self_
+
+name: cls_dp_det
+
+# Distinct prefix so deterministic runs never collide with the reproduced *_clsdp_* runs.
+checkpoint_name: ${task_name}_clsdpdet_Agent${agent_id}_${data_num}
+
+policy:
+  prior_net:
+    deterministic: true
+  # Moot with a deterministic prior (there is no scale head), set false for clarity.
+  latent_sample: False

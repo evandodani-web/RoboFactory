@@ -1,0 +1,26 @@
+# CLS-DP Stage 1, DETERMINISTIC variant.
+#
+# Inherits everything from cls_stage1.yaml and overrides only the stochasticity, so this
+# cannot drift from the reproduced baseline. The encoders emit z directly instead of
+# (mean, log-scale), nothing is sampled, and the KL is replaced by its unit-variance
+# limit 0.5*||z_E||^2 (see diffusion_policy/policy/contextualizer.py::_residual_l2).
+#
+# beta keeps its meaning and its warm-up schedule: at sigma=1 the KL *is* that L2 term,
+# so the two variants weight the alignment identically.
+#
+# Launch with policy/Diffusion-Policy/train_cls_stage1_det.sh
+defaults:
+  - cls_stage1
+  - _self_
+
+name: cls_stage1_det
+
+# Distinct prefix so deterministic runs never collide with the reproduced *_ctx_* runs.
+checkpoint_name: ${task_name}_ctxdet_Agent${agent_id}_${data_num}
+
+contextualizer:
+  deterministic: true
+  prior_net:
+    deterministic: true
+  ma_encoder:
+    deterministic: true

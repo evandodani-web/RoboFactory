@@ -69,6 +69,10 @@ class Args:
     instruction_index: Optional[int] = None
     """Pin a specific instruction instead of sampling one."""
 
+    ckpt_prefix: str = "clsdp"
+    """Checkpoint family to load: checkpoints/{task}_{ckpt_prefix}_Agent{i}_{data_num}/.
+    Use 'clsdpdet' for the deterministic-latent variant."""
+
     siglip_model: str = DEFAULT_MODEL_NAME
     siglip_pool_grid: int = 14
 
@@ -163,9 +167,10 @@ class CLSDP:
         text_tokens,
         text_mask,
         latent_sample=None,
+        ckpt_prefix="clsdp",
     ):
         checkpoint = (
-            f"checkpoints/{task_name}_clsdp_Agent{agent_id}_{data_num}/"
+            f"checkpoints/{task_name}_{ckpt_prefix}_Agent{agent_id}_{data_num}/"
             f"{checkpoint_num}.ckpt"
         )
         self.policy = get_policy(checkpoint, None, "cuda:0")
@@ -310,6 +315,7 @@ def main(args: Args):
             text_tokens,
             text_mask,
             latent_sample=args.latent_sample,
+            ckpt_prefix=args.ckpt_prefix,
         )
         for agent_id in range(agent_num)
     ]

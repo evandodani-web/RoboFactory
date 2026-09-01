@@ -158,10 +158,12 @@ class CLSDiffusionUnetImagePolicy(BaseImagePolicy):
                 prior_inputs["prior_text_tokens"],
                 text_mask=prior_inputs.get("prior_text_mask"),
             )
-            if self.latent_sample:
-                latent = mu + torch.exp(log_sigma) * torch.randn_like(mu)
-            else:
+            # log_sigma is None for a deterministic prior, which has no scale head to
+            # sample from; latent_sample is then moot.
+            if log_sigma is None or not self.latent_sample:
                 latent = mu
+            else:
+                latent = mu + torch.exp(log_sigma) * torch.randn_like(mu)
         return latent.detach()
 
     # ---------------------------------------------------------------- inference

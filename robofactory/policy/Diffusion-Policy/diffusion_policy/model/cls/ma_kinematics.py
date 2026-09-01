@@ -37,12 +37,15 @@ class MAKinematicsEncoder(nn.Module):
         dropout: float = 0.0,
         log_sigma_min: float = -5.0,
         log_sigma_max: float = 2.0,
+        deterministic: bool = False,
     ):
         super().__init__()
         self.n_agents = n_agents
         self.n_future_states = n_future_states
         self.log_sigma_min = log_sigma_min
         self.log_sigma_max = log_sigma_max
+        # Deterministic variant: emit only the residual, with no scale head.
+        self.deterministic = deterministic
 
         self.in_proj = nn.Linear(state_dim, d_model)
         self.agent_embed = nn.Parameter(torch.zeros(n_agents, d_model))
@@ -64,12 +67,15 @@ class MAKinematicsEncoder(nn.Module):
         )
         self.norm_out = nn.LayerNorm(d_model)
         self.to_mu_residual = nn.Linear(d_model, latent_dim)
-        self.to_log_sigma = nn.Linear(d_model, latent_dim)
-
         nn.init.zeros_(self.to_mu_residual.weight)
         nn.init.zeros_(self.to_mu_residual.bias)
-        nn.init.zeros_(self.to_log_sigma.weight)
-        nn.init.zeros_(self.to_log_sigma.bias)
+
+        if deterministic:
+            self.to_log_sigma = None
+        else:
+            self.to_log_sigma = nn.Linear(d_model, latent_dim)
+            nn.init.zeros_(self.to_log_sigma.weight)
+            nn.init.zeros_(self.to_log_sigma.bias)
 
     def forward(self, future_states):
         """
@@ -78,7 +84,7 @@ class MAKinematicsEncoder(nn.Module):
 
         Returns:
             mu_residual: (B, latent_dim)
-            log_sigma:   (B, latent_dim)
+            log_sigma:   (B, latent_dim), or None in the deterministic variant
         """
         batch_size = future_states.shape[0]
 
@@ -94,6 +100,8 @@ class MAKinematicsEncoder(nn.Module):
         hidden = self.norm_out(hidden)
 
         mu_residual = self.to_mu_residual(hidden)
+        if self.to_log_sigma is None:
+            return mu_residual, None
         log_sigma = self.to_log_sigma(hidden).clamp(
             self.log_sigma_min, self.log_sigma_max
         )

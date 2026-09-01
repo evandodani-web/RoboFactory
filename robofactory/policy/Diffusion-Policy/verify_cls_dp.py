@@ -33,7 +33,7 @@ from diffusion_policy.model.cls.ma_kinematics import (
 )
 from diffusion_policy.model.cls.prior_net import PriorNet
 from diffusion_policy.model.diffusion.cls_conditional_unet1d import CLSConditionalUnet1D
-from diffusion_policy.policy.contextualizer import _residual_kl
+from diffusion_policy.policy.contextualizer import _residual_kl, _residual_l2
 
 BATCH, N_AGENTS, N_FUTURE = 4, 3, 8
 STATE_DIM, LATENT_DIM, FEATURE_DIM = 8, 256, 768
@@ -174,6 +174,51 @@ def main():
     ).abs().max().item()
     print(f"       once trained, changing z moves the output by {delta:.4f}")
     check("z influences the output", delta > 0)
+
+    print("\n[6] Deterministic variant")
+    det_prior = PriorNet(
+        feature_dim=FEATURE_DIM, latent_dim=LATENT_DIM, d_model=128,
+        n_layers=1, n_heads=4, dim_feedforward=256, deterministic=True,
+    )
+    det_encoder = MAKinematicsEncoder(
+        state_dim=STATE_DIM, n_agents=N_AGENTS, n_future_states=N_FUTURE,
+        latent_dim=LATENT_DIM, d_model=64, n_layers=1, n_heads=4,
+        dim_feedforward=128, deterministic=True,
+    )
+    det_mu, det_log_sigma, _ = det_prior(image_tokens, text_tokens, text_mask)
+    det_residual, det_post_log_sigma = det_encoder(future_states)
+
+    check("prior emits z with no scale head", det_log_sigma is None)
+    check("posterior emits a residual with no scale head", det_post_log_sigma is None)
+    check("no scale parameters exist at all",
+          det_prior.to_log_sigma is None and det_encoder.to_log_sigma is None)
+    check("latent shape unchanged", tuple(det_mu.shape) == (BATCH, LATENT_DIM))
+
+    # The deterministic alignment term is the unit-variance limit of the KL, not a
+    # different objective. Verify that against the stochastic implementation directly.
+    probe = torch.randn(BATCH, LATENT_DIM) * 0.8
+    unit = torch.zeros(BATCH, LATENT_DIM)  # log sigma = 0  ->  sigma = 1
+    gap = (_residual_kl(unit, probe, unit) - _residual_l2(probe)).abs().max().item()
+    print(f"       KL at sigma=1 vs L2 alignment: max abs diff {gap:.3e}")
+    check("deterministic loss == KL with unit variances", gap < 1e-5)
+
+    # Mirrors the stochastic case, where zero-init makes the KL start at exactly 0: the
+    # residual head is zero-initialised, so the alignment term also starts at its minimum
+    # and produces no gradient anywhere on step 0.
+    check("alignment starts at exactly 0", _residual_l2(det_residual).abs().max().item() == 0.0)
+
+    # Once the residual moves off zero, the distillation geometry must still hold: the
+    # alignment depends only on the residual, so the prior receives no gradient from it.
+    det_prior.zero_grad()
+    det_encoder.zero_grad()
+    torch.nn.init.normal_(det_encoder.to_mu_residual.weight, std=0.05)
+    _residual_l2(det_encoder(future_states)[0]).mean().backward()
+    prior_grads = [p.grad for p in det_prior.parameters() if p.grad is not None]
+    residual_grad = det_encoder.to_mu_residual.weight.grad.abs().max().item()
+    print(f"       prior tensors with gradient from alignment: {len(prior_grads)}"
+          f"   residual head grad: {residual_grad:.3e}")
+    check("alignment gives the prior no gradient", len(prior_grads) == 0)
+    check("alignment trains the residual head", residual_grad > 0)
 
     print("\nALL CLS-DP MODULE CHECKS PASSED\n")
 
