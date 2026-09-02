@@ -764,6 +764,40 @@ degrades, that is the mechanism showing up, not a bug.
 In deterministic mode the `ctx_kl` metric key holds the L2 alignment term. The key name is
 shared so the gate and epoch-averaging code stay common.
 
+### Study FG — factorized latent (built, not yet trained)
+
+Study DET plus a split of the prior latent into a self half and a teammate half, each with
+its own decoder, and the privileged residual applied to the teammate half only. Design
+rationale in [CLS-DP-variant-factorized-grounded.md](CLS-DP-variant-factorized-grounded.md).
+
+| Knob | Value |
+|---|---|
+| Latent | `[z_self 128 ; z_team 128]`, total still 256 so Stage 2 is unchanged |
+| Split | a slicing convention inside the contextualizer; `PriorNet` still emits one vector |
+| Decoders | `decoder_self` (n_agents=1) and `decoder_team` (n_agents=N-1) |
+| Residual | team-width, applied to `z_team` only |
+| Probes | `prior_probe` and `leak_probe`, both stop-gradiented |
+| Configs | `cls_stage1_fg.yaml`, `cls_dp_fg.yaml` (inherit the DET configs) |
+| Checkpoints | `checkpoints/LiftBarrier-rf_{ctxfg,clsdpfg}_Agent{0,1}_150/` |
+| Pipeline | `policy/Diffusion-Policy/train_study_fg.sh` |
+| Eval | `eval_cls_sweep.sh ... clsdpfg` |
+
+**The diagnostic is arguably the more valuable half.** Stage 1 never ran the decoder on the
+prior's latent alone — every reconstruction used `z_prior + residual` — but Stage 2 and
+deployment only ever see `z_prior`. The gate inherited that, so it could report a healthy
+teammate reconstruction while the prior on its own was useless. `prior_probe` closes that
+hole, and the gate now prints combined, prior-only and leak.
+
+The probe is a **separately trained read-out**, not a second pass through the existing
+decoder: reusing the trained decoder would score it off-manifold and conflate "the prior
+lacks the information" with "the decoder has never seen this input."
+
+Clearing `prior_probe_stop_grad` converts the probe into a prior-only reconstruction *loss*.
+That is a different experiment and should only be run once the measurement shows a gap.
+
+`cls_stage1_det_probe.yaml` is Study DET plus the prior probe alone, for answering the
+diagnostic question without also factorizing.
+
 ### Study B — ThreeRobotsStackCube (in progress)
 
 Same recipe, new task. Paper Table II is **20%** on this 3-agent stack. Official HuggingFace

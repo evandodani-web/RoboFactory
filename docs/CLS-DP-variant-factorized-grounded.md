@@ -8,7 +8,8 @@ Related: [CLS-DP-replication-spec.md](CLS-DP-replication-spec.md) (paper extract
 [CLS-DP-implementation-notes.md](CLS-DP-implementation-notes.md) (baseline + study log),
 [CLS-DP-improvements.md](CLS-DP-improvements.md) (the full ranked idea list).
 
-Status: **design only, nothing implemented.**
+Status: **implemented and verified, not yet trained.** Both changes below are built and
+flag-gated. See section 9 for how to run it.
 
 > This doc went through several rounds. Section 5 records the ideas that were considered and
 > dropped, and why — the reasoning is more useful than the conclusions, because two of the
@@ -113,18 +114,27 @@ is computed from that same `squared_error`, so `ctx_recon_others` measures how w
 *combined* latent reconstructs teammates. **The gate can pass while the prior alone is
 useless.** We have been treating that gate as authoritative.
 
-**What to add:** a second decoder pass on `z_team` alone, logged as a metric with no
-gradient. One extra decoder call (~1.7M params, negligible), no new weight, no risk. It
-answers a question we currently cannot answer:
+**What was built:** a **separately trained read-out decoder**, not a second pass through the
+existing one. Reusing the trained decoder would evaluate it off-manifold — it has only ever
+seen `z_prior + residual` — so a bad number would conflate "the prior lacks the information"
+with "the decoder has never seen this input." The probe is trained on the distribution it is
+scored on, which is standard probe methodology and what PSG-JEPA does for its Table 1.
+
+It answers a question we otherwise cannot:
 
 - Small gap between combined and prior-only → distillation is working as advertised.
 - Large gap → the residual is carrying the load and the prior never learned the job.
 
-**Only add the loss term if the gap is large.** Training on prior-only reconstruction is the
-obvious fix, but it trades against what the residual is actually for (see section 5.4), so it
-should be justified by a measurement rather than a guess.
+A second probe, `leak_probe`, reads `z_self` and also targets teammates. It should do
+*badly*. Read it **relative to `prior_probe`**, not in absolute terms: `own_state` alone
+correlates with teammates' futures in a coordinated task, so a low absolute error is not by
+itself evidence of leakage.
 
-**Also report both numbers in the gate**, not just the combined one.
+Both stop-gradient by default, so they are pure measurement. **Clearing
+`prior_probe_stop_grad` turns that probe into the prior-only reconstruction loss from
+section 5.4** — one module, two uses. Only do that if the measurement says there is a gap.
+
+The Stage 1 gate now prints all three numbers.
 
 ---
 
@@ -269,3 +279,64 @@ results directories stay separate.
 4. **Sequencing.** Study DET's number is informative for how to build this. Step 1
    (factorization + diagnostics) is cheap enough to develop in parallel, but wait for DET
    before adding anything on top.
+
+---
+
+## 9. How it is implemented
+
+Almost all of it lives in
+[contextualizer.py](../robofactory/policy/Diffusion-Policy/diffusion_policy/policy/contextualizer.py).
+`PriorNet` and `MAKinematics*` are **unchanged**:
+
+- The split is a **slicing convention** (`split_latent`), not separate output heads. The
+  prior still emits one 256-d vector, so Stage 2, the action expert and
+  `_load_prior_weights` are all untouched.
+- `decoder_self`, `decoder_team` and both probes are just extra `MAKinematicsDecoder`
+  instances with different `n_agents` / `latent_dim`.
+- The privileged encoder emits a team-width residual purely via `latent_dim: ${team_dim}`
+  in config.
+
+### Flags
+
+| Flag | Default | Effect |
+|---|---|---|
+| `factorize` | `false` | Split the latent, use the two decoders |
+| `self_dim` | 128 | Width of `z_self`; `team_dim` is the remainder |
+| `prior_probe` | `null` | Attach the prior-only read-out |
+| `leak_probe` | `null` | Attach the `z_self` leak read-out |
+| `prior_probe_stop_grad` | `true` | `true` = measurement, `false` = intervention |
+| `leak_probe_stop_grad` | `true` | Should stay `true` |
+| `probe_weight` | 1.0 | Only matters when a stop-grad is cleared |
+
+### Configs
+
+Chained inheritance, `cls_stage1` to `cls_stage1_det` to `cls_stage1_fg`, so the variant
+cannot drift from the reproduced baseline. Verified by composition: `cls_stage1_fg` differs
+from `cls_stage1_det` only in the factorization keys, the new modules and the checkpoint
+name; `cls_dp_fg` differs from `cls_dp_det` only in names.
+
+`cls_stage1_det_probe.yaml` is Study DET plus the prior probe alone — the cheapest way to
+answer section 4's question without changing anything else.
+
+### Running
+
+```bash
+bash policy/Diffusion-Policy/train_study_fg.sh     # both stages, both agents
+
+bash policy/Diffusion-Policy/eval_cls_sweep.sh \
+    LiftBarrier-rf configs/table/lift_barrier.yaml 150 100 1000 1099 10 250 clsdpfg
+```
+
+### New metrics
+
+`ctx_probe_recon_others`, `ctx_leak_recon_others`, `ctx_prior_gap` (prior-only minus
+combined — the headline number), `ctx_leak_ratio` (leak over prior-only; well above 1 means
+the split held). Existing keys are unchanged so the gate and epoch-averaging still work.
+
+### Verification
+
+`verify_cls_dp.py` sections 7-8 and `verify_cls_pipeline.py` sections 8-9. 101 pipeline
+checks total. The one worth knowing about: section 9 fits two identical probes, one on a
+latent that literally encodes the target and one on noise, and requires the informative one
+to win by more than 2x. Without it `ctx_leak_ratio` could look healthy simply because every
+probe fails.
