@@ -1,0 +1,18 @@
+# CLS-DP Stage 2, FACTORIZED variant (Study FG).
+#
+# Almost nothing to do here. Factorization is internal to Stage 1: the prior still emits a
+# single 256-d latent and the action expert still cross-attends to all of it. So this only
+# differs from cls_dp_det.yaml in the checkpoint names.
+#
+# The Stage 1 checkpoint it pairs with carries extra modules (two decoders, two probes),
+# but CLSRobotWorkspace._load_prior_weights only pulls `prior_net.*`, and prior_net is
+# architecturally identical across all three variants.
+#
+# Launch with policy/Diffusion-Policy/train_cls_dp_fg.sh
+defaults:
+  - cls_dp_det
+  - _self_
+
+name: cls_dp_fg
+
+checkpoint_name: ${task_name}_clsdpfg_Agent${agent_id}_${data_num}

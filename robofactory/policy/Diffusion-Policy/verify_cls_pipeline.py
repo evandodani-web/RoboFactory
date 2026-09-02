@@ -612,6 +612,153 @@ def build_stage2_batch(zarr_path):
     return ds.postprocess(ds[np.arange(BATCH)], torch.device("cpu"))
 
 
+SELF_DIM = LATENT_DIM // 2
+TEAM_DIM = LATENT_DIM - SELF_DIM
+N_OTHERS = N_AGENTS - 1
+
+SMALL_DECODER = ["d_model=64", "n_layers=1", "n_heads=4", "dim_feedforward=128"]
+
+FG_CTX_OVERRIDES = (
+    [
+        "contextualizer.prior_net.d_model=64", "contextualizer.prior_net.n_layers=1",
+        "contextualizer.prior_net.n_heads=4",
+        "contextualizer.prior_net.dim_feedforward=128",
+        "contextualizer.ma_encoder.d_model=64", "contextualizer.ma_encoder.n_layers=1",
+        "contextualizer.ma_encoder.n_heads=4",
+        "contextualizer.ma_encoder.dim_feedforward=128",
+        f"feature_dim={FEATURE_DIM}", f"latent_dim={LATENT_DIM}",
+        f"self_dim={SELF_DIM}", "agent_id=0",
+        f"dataloader.batch_size={BATCH}", f"val_dataloader.batch_size={BATCH}",
+    ]
+    + [f"contextualizer.{d}.{o}" for o in SMALL_DECODER
+       for d in ("decoder_self", "decoder_team", "prior_probe", "leak_probe")]
+)
+
+
+def test_factorized_variant(workdir, zarr_path):
+    """Drive Study FG end to end through the real _fg configs."""
+    print("\n[8] Factorized variant, end to end")
+    from diffusion_policy.workspace.cls_robotworkspace import CLSRobotWorkspace
+    from diffusion_policy.workspace.contextualizer_workspace import ContextualizerWorkspace
+
+    cwd = os.getcwd()
+
+    cfg1 = load_cfg("cls_stage1_fg", zarr_path, FG_CTX_OVERRIDES)
+    check("FG config resolves", cfg1.contextualizer.factorize is True)
+    check("FG inherits determinism from its DET parent",
+          cfg1.contextualizer.deterministic is True)
+    check("FG checkpoint prefix is distinct", "ctxfg" in cfg1.checkpoint_name,
+          cfg1.checkpoint_name)
+    check("residual is team-width, not full-width",
+          cfg1.contextualizer.ma_encoder.latent_dim == TEAM_DIM,
+          f"{cfg1.contextualizer.ma_encoder.latent_dim} vs {TEAM_DIM}")
+    check("decoder_self covers exactly one agent",
+          cfg1.contextualizer.decoder_self.n_agents == 1)
+    check("decoder_team covers exactly the teammates",
+          cfg1.contextualizer.decoder_team.n_agents == N_OTHERS)
+
+    ws1 = ContextualizerWorkspace(cfg1, output_dir=os.path.join(workdir, "out_fg1"))
+    check("monolithic decoder is not built when factorized", ws1.model.ma_decoder is None)
+    check("both probes are attached",
+          ws1.model.prior_probe is not None and ws1.model.leak_probe is not None)
+
+    ds = build_dataset(zarr_path, stage=1)
+    ws1.model.set_normalizer(ds.get_normalizer())
+    batch = ds.postprocess(ds[np.arange(BATCH)], torch.device("cpu"))
+    _, metrics = ws1.model.compute_loss(batch, beta=0.1)
+    for key in ("ctx_recon_own", "ctx_recon_others", "ctx_recon_others_baseline",
+                "ctx_probe_recon_others", "ctx_leak_recon_others",
+                "ctx_prior_gap", "ctx_leak_ratio"):
+        check(f"metric {key} present and finite",
+              key in metrics and np.isfinite(metrics[key]))
+
+    print("    NOTE: debug mode runs ~6 optimizer steps on random SigLIP features, so all")
+    print("    three gate lines below are EXPECTED to look bad. What is being checked here")
+    print("    is that they are computed and reported, not what they say. Section [9]")
+    print("    verifies the probe machinery can actually distinguish signal from noise.")
+    os.chdir(workdir)
+    try:
+        ws1.run()
+    finally:
+        os.chdir(cwd)
+    fg_ctx = os.path.join(
+        workdir, "checkpoints", f"{TASK}_ctxfg_Agent0_{N_EPISODES}", "1.ckpt"
+    )
+    check("FG Stage 1 wrote a checkpoint", os.path.isfile(fg_ctx))
+
+    fg_policy_overrides = [
+        "policy.prior_net.d_model=64", "policy.prior_net.n_layers=1",
+        "policy.prior_net.n_heads=4", "policy.prior_net.dim_feedforward=128",
+        f"feature_dim={FEATURE_DIM}", f"latent_dim={LATENT_DIM}", "agent_id=0",
+        f"dataloader.batch_size={BATCH}", f"val_dataloader.batch_size={BATCH}",
+        "policy.down_dims=[32,64]", "policy.diffusion_step_embed_dim=32",
+        "policy.kernel_size=3", "policy.n_cond_tokens=2", "policy.cond_token_dim=32",
+        "policy.cross_attn_heads=2", "policy.num_inference_steps=3",
+        "policy.noise_scheduler.num_train_timesteps=20",
+        f"contextualizer_ckpt={fg_ctx}",
+        f"task.shape_meta.obs.head_cam.shape=[3,{IMG_H},{IMG_W}]",
+    ]
+    cfg2 = load_cfg("cls_dp_fg", zarr_path, fg_policy_overrides)
+    check("FG Stage 2 prefix is distinct", "clsdpfg" in cfg2.checkpoint_name,
+          cfg2.checkpoint_name)
+
+    # Stage 1 FG saves extra modules (two decoders, two probes) but _load_prior_weights
+    # pulls only prior_net.*, which is identical across every variant.
+    ws2 = CLSRobotWorkspace(cfg2, output_dir=os.path.join(workdir, "out_fg2"))
+    check("FG Stage 2 loaded the prior despite the extra Stage 1 modules", True)
+
+    os.chdir(workdir)
+    try:
+        ws2.run()
+    finally:
+        os.chdir(cwd)
+    check("FG Stage 2 wrote a checkpoint", os.path.isfile(os.path.join(
+        workdir, "checkpoints", f"{TASK}_clsdpfg_Agent0_{N_EPISODES}", "1.ckpt")))
+
+
+def test_probe_detects_information():
+    """The leak probe must be able to tell an informative latent from a useless one.
+
+    Without this, `ctx_leak_ratio` could look healthy purely because every probe fails.
+    Fit two identical probes on the same target: one reads a latent that literally encodes
+    it, the other reads noise. The informative one has to win by a wide margin, otherwise
+    the probe machinery is not measuring anything.
+    """
+    print("\n[9] Probe methodology is not vacuous")
+    from diffusion_policy.model.cls.ma_kinematics import MAKinematicsDecoder
+
+    torch.manual_seed(0)
+    target = torch.randn(BATCH, N_OTHERS, N_FUTURE, STATE_DIM)
+    own_state = torch.randn(BATCH, STATE_DIM)
+
+    flat = target.reshape(BATCH, -1)
+    informative = torch.zeros(BATCH, TEAM_DIM)
+    width = min(TEAM_DIM, flat.shape[1])
+    informative[:, :width] = flat[:, :width]
+    noise = torch.randn(BATCH, TEAM_DIM)
+
+    def fit(latent, steps=300):
+        probe = MAKinematicsDecoder(
+            state_dim=STATE_DIM, n_agents=N_OTHERS, n_future_states=N_FUTURE,
+            latent_dim=TEAM_DIM, d_model=64, n_layers=1, n_heads=4, dim_feedforward=128,
+        )
+        opt = torch.optim.AdamW(probe.parameters(), lr=3e-3)
+        for _ in range(steps):
+            opt.zero_grad()
+            loss = ((probe(own_state, latent) - target) ** 2).mean()
+            loss.backward()
+            opt.step()
+        return loss.item()
+
+    err_informative = fit(informative)
+    err_noise = fit(noise)
+    ratio = err_noise / max(err_informative, 1e-12)
+    print(f"       informative latent {err_informative:.5f} vs noise {err_noise:.5f}"
+          f"   ratio {ratio:.1f}x")
+    check("a probe recovers information that is present", err_informative < err_noise)
+    check("the gap is large enough to be a usable signal", ratio > 2.0)
+
+
 def test_eval_script(workdir):
     """Cover eval_multi_cls_dp.py's pure logic without the simulator.
 
@@ -704,6 +851,8 @@ def main():
         test_workspaces(workdir, zarr_path)
         test_deterministic_variant(workdir, zarr_path)
         test_eval_script(workdir)
+        test_factorized_variant(workdir, zarr_path)
+        test_probe_detects_information()
         print(f"\nALL {len(PASSED)} PIPELINE CHECKS PASSED\n")
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

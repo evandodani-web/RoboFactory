@@ -1,0 +1,98 @@
+# CLS-DP Stage 1, FACTORIZED variant (Study FG).
+#
+# Inherits Study DET and adds the latent split. The prior keeps emitting a single 256-d
+# vector -- the split is a slicing convention inside the contextualizer -- so Stage 2, the
+# action expert and prior-weight loading are all unchanged.
+#
+#   z_self (128)  -> decoder_self  -> MY future        (privileged residual does NOT apply)
+#   z_team (128)  -> decoder_team  -> THEIR futures    (residual applies here only)
+#
+# Two decoders rather than one is what makes the split real. With a single decoder over all
+# agents' futures nothing stops z_self from absorbing teammate information and the split
+# would be a naming convention.
+#
+# Both probes are attached and stop-gradiented, so they are measurement only:
+#   prior_probe -> is the prior alone sufficient? (deployment sees no residual)
+#   leak_probe  -> did the split actually hold?   (should do BADLY)
+#
+# Launch with policy/Diffusion-Policy/train_cls_stage1_fg.sh
+defaults:
+  - cls_stage1_det
+  - _self_
+
+name: cls_stage1_fg
+
+checkpoint_name: ${task_name}_ctxfg_Agent${agent_id}_${data_num}
+
+# Split of the 256-d latent. Total is unchanged so Stage 2's cross-attention interface is
+# identical to Study B. Coordination is arguably the harder job, so 64/192 is worth a try.
+self_dim: 128
+team_dim: ${eval:'${latent_dim} - ${self_dim}'}
+n_others: ${eval:'${n_agents} - 1'}
+
+contextualizer:
+  factorize: True
+  self_dim: ${self_dim}
+
+  # The privileged encoder still sees ALL agents' futures -- coordination is relational, so
+  # it needs my trajectory to interpret theirs -- but emits a team-sized residual.
+  ma_encoder:
+    latent_dim: ${team_dim}
+
+  # Unused when factorize=True; the two decoders below replace it.
+  ma_decoder: null
+
+  decoder_self:
+    _target_: diffusion_policy.model.cls.ma_kinematics.MAKinematicsDecoder
+    state_dim: ${state_dim}
+    n_agents: 1
+    n_future_states: ${n_future_states}
+    latent_dim: ${self_dim}
+    d_model: 256
+    n_layers: 2
+    n_heads: 4
+    dim_feedforward: 512
+    dropout: 0.0
+
+  decoder_team:
+    _target_: diffusion_policy.model.cls.ma_kinematics.MAKinematicsDecoder
+    state_dim: ${state_dim}
+    n_agents: ${n_others}
+    n_future_states: ${n_future_states}
+    latent_dim: ${team_dim}
+    d_model: 256
+    n_layers: 2
+    n_heads: 4
+    dim_feedforward: 512
+    dropout: 0.0
+
+  prior_probe:
+    _target_: diffusion_policy.model.cls.ma_kinematics.MAKinematicsDecoder
+    state_dim: ${state_dim}
+    n_agents: ${n_others}
+    n_future_states: ${n_future_states}
+    latent_dim: ${team_dim}
+    d_model: 256
+    n_layers: 2
+    n_heads: 4
+    dim_feedforward: 512
+    dropout: 0.0
+
+  leak_probe:
+    _target_: diffusion_policy.model.cls.ma_kinematics.MAKinematicsDecoder
+    state_dim: ${state_dim}
+    n_agents: ${n_others}
+    n_future_states: ${n_future_states}
+    latent_dim: ${self_dim}
+    d_model: 256
+    n_layers: 2
+    n_heads: 4
+    dim_feedforward: 512
+    dropout: 0.0
+
+  # Both True keeps the probes as pure measurement. Clearing prior_probe_stop_grad turns
+  # that probe into a prior-only reconstruction loss -- a different experiment, and one
+  # worth running only after the measurement says there is a gap to close.
+  prior_probe_stop_grad: True
+  leak_probe_stop_grad: True
+  probe_weight: 1.0

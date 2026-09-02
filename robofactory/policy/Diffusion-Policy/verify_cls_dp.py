@@ -19,6 +19,7 @@ What it protects:
     once the zero-initialised output projections have moved.
 """
 
+import math
 import sys
 import os
 
@@ -26,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import torch
 
+from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.model.cls.cross_attention import CrossAttention1d, LatentTokenizer
 from diffusion_policy.model.cls.ma_kinematics import (
     MAKinematicsDecoder,
@@ -219,6 +221,106 @@ def main():
           f"   residual head grad: {residual_grad:.3e}")
     check("alignment gives the prior no gradient", len(prior_grads) == 0)
     check("alignment trains the residual head", residual_grad > 0)
+
+    print("\n[7] Factorized variant")
+    from diffusion_policy.policy.contextualizer import Contextualizer
+
+    SELF_DIM = 96
+    TEAM_DIM = LATENT_DIM - SELF_DIM
+    N_OTHERS = N_AGENTS - 1
+
+    def make_decoder(n_agents, latent):
+        return MAKinematicsDecoder(
+            state_dim=STATE_DIM, n_agents=n_agents, n_future_states=N_FUTURE,
+            latent_dim=latent, d_model=64, n_layers=1, n_heads=4, dim_feedforward=128,
+        )
+
+    ctx = Contextualizer(
+        prior_net=PriorNet(feature_dim=FEATURE_DIM, latent_dim=LATENT_DIM, d_model=128,
+                           n_layers=1, n_heads=4, dim_feedforward=256, deterministic=True),
+        ma_encoder=MAKinematicsEncoder(
+            state_dim=STATE_DIM, n_agents=N_AGENTS, n_future_states=N_FUTURE,
+            latent_dim=TEAM_DIM, d_model=64, n_layers=1, n_heads=4,
+            dim_feedforward=128, deterministic=True),
+        decoder_self=make_decoder(1, SELF_DIM),
+        decoder_team=make_decoder(N_OTHERS, TEAM_DIM),
+        prior_probe=make_decoder(N_OTHERS, TEAM_DIM),
+        leak_probe=make_decoder(N_OTHERS, SELF_DIM),
+        agent_id=1, n_agents=N_AGENTS, latent_dim=LATENT_DIM,
+        deterministic=True, factorize=True, self_dim=SELF_DIM,
+    )
+
+    full = torch.randn(BATCH, LATENT_DIM)
+    z_self, z_team = ctx.split_latent(full)
+    check("split widths", tuple(z_self.shape) == (BATCH, SELF_DIM)
+          and tuple(z_team.shape) == (BATCH, TEAM_DIM))
+    check("split is a partition of the full latent",
+          torch.equal(torch.cat([z_self, z_team], dim=-1), full))
+    print(f"       agent_id=1, teammate ids {ctx.other_ids}")
+    check("agent_id excluded from the teammate set",
+          ctx.other_ids == [j for j in range(N_AGENTS) if j != 1])
+
+    normalizer = LinearNormalizer()
+    normalizer.fit(data={"state": torch.randn(256, STATE_DIM)}, last_n_dims=1)
+    ctx.set_normalizer(normalizer)
+
+    batch = {
+        "own_state": torch.randn(BATCH, STATE_DIM),
+        "future_states": torch.randn(BATCH, N_AGENTS, N_FUTURE, STATE_DIM),
+        "prior_image_tokens": image_tokens,
+        "prior_text_tokens": text_tokens,
+        "prior_text_mask": text_mask,
+    }
+    loss, metrics = ctx.compute_loss(batch, beta=0.1)
+    check("factorized loss is finite", math.isfinite(loss.item()))
+    for key in ("ctx_recon_own", "ctx_recon_others", "ctx_recon_others_baseline",
+                "ctx_probe_recon_others", "ctx_leak_recon_others",
+                "ctx_prior_gap", "ctx_leak_ratio"):
+        check(f"metric {key} present and finite",
+              key in metrics and math.isfinite(metrics[key]))
+
+    # The decoders must be shape-correct for their own slice of the problem.
+    own_state_n = ctx.normalizer["state"].normalize(batch["own_state"])
+    check("decoder_self emits one agent",
+          tuple(ctx.decoder_self(own_state_n, z_self).shape)
+          == (BATCH, 1, N_FUTURE, STATE_DIM))
+    check("decoder_team emits N-1 agents",
+          tuple(ctx.decoder_team(own_state_n, z_team).shape)
+          == (BATCH, N_OTHERS, N_FUTURE, STATE_DIM))
+
+    print("\n[8] Probe stop-gradient")
+    ctx.zero_grad()
+    loss, _ = ctx.compute_loss(batch, beta=0.1)
+    loss.backward()
+    check("stop-grad probes still train their own parameters",
+          ctx.prior_probe.to_state.weight.grad.abs().max().item() > 0
+          and ctx.leak_probe.to_state.weight.grad.abs().max().item() > 0)
+
+    # With both probes detached, the only gradient the prior sees comes from the two
+    # reconstruction paths. Isolate the probe terms and confirm they contribute nothing.
+    ctx.zero_grad()
+    mu_prior, _, _ = ctx.prior_net(image_tokens, text_tokens, text_mask)
+    zs, zt = ctx.split_latent(mu_prior)
+    team_target = ctx.normalizer["state"].normalize(batch["future_states"])[:, ctx.other_ids]
+    probe_only, _ = ctx._probe_outputs(own_state_n, team_target, zs, zt)
+    probe_only.backward()
+    prior_grads = [p.grad for p in ctx.prior_net.parameters()
+                   if p.grad is not None and p.grad.abs().max() > 0]
+    print(f"       prior tensors with gradient from the probe terms: {len(prior_grads)}")
+    check("detached probes give the prior no gradient", len(prior_grads) == 0)
+
+    # Clearing the flag is what turns the probe into an intervention.
+    ctx.prior_probe_stop_grad = False
+    ctx.zero_grad()
+    mu_prior, _, _ = ctx.prior_net(image_tokens, text_tokens, text_mask)
+    zs, zt = ctx.split_latent(mu_prior)
+    probe_only, _ = ctx._probe_outputs(own_state_n, team_target, zs, zt)
+    probe_only.backward()
+    attached = [p.grad for p in ctx.prior_net.parameters()
+                if p.grad is not None and p.grad.abs().max() > 0]
+    print(f"       with stop-grad cleared: {len(attached)}")
+    check("clearing stop-grad reaches the prior", len(attached) > 0)
+    ctx.prior_probe_stop_grad = True
 
     print("\nALL CLS-DP MODULE CHECKS PASSED\n")
 

@@ -229,6 +229,42 @@ class ContextualizerWorkspace(BaseWorkspace):
                 "that future_states really contains all agents."
             )
 
+        # The number above is measured on the *combined* latent (prior + privileged
+        # residual), but deployment only has the prior. When the probe is attached, report
+        # both so a passing gate cannot hide an insufficient prior.
+        prior_only = step_log.get(
+            "val_ctx_probe_recon_others", step_log.get("ctx_probe_recon_others")
+        )
+        if prior_only is not None:
+            gap = step_log.get("val_ctx_prior_gap", step_log.get("ctx_prior_gap"))
+            prior_verdict = "PASS" if prior_only < baseline else "FAIL"
+            print(
+                f"[Stage 1 gate] prior-only reconstruction {prior_only:.5f} "
+                f"(gap vs combined {gap:+.5f}) -> {prior_verdict}"
+            )
+            if prior_verdict == "FAIL":
+                print(
+                    "  Only the combined latent works. Stage 2 and deployment see the "
+                    "prior alone, so the distillation has not transferred."
+                )
+
+        leak = step_log.get(
+            "val_ctx_leak_recon_others", step_log.get("ctx_leak_recon_others")
+        )
+        if leak is not None:
+            ratio = step_log.get("val_ctx_leak_ratio", step_log.get("ctx_leak_ratio"))
+            held = ratio is None or ratio > 1.5
+            print(
+                f"[Stage 1 gate] leak probe (z_self -> teammates) {leak:.5f}"
+                + (f", ratio vs prior-only {ratio:.2f}x" if ratio is not None else "")
+                + f" -> {'SPLIT HELD' if held else 'NOT SEPARATED'}"
+            )
+            if not held:
+                print(
+                    "  z_self predicts teammates at least as well as z_team does, so the "
+                    "two halves are not cleanly separated and the split may be cosmetic."
+                )
+
 
 @hydra.main(
     version_base=None,

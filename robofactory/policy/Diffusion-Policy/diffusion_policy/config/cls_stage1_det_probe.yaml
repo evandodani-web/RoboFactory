@@ -1,0 +1,39 @@
+# CLS-DP Stage 1, DETERMINISTIC + prior probe.
+#
+# Study DET with one addition: a read-out decoder trained on the *prior's* latent alone,
+# with a stop-gradient so it is pure measurement and changes nothing about training.
+#
+# It answers a question the normal gate cannot. The real reconstruction always runs on
+# `z_prior + residual`, but Stage 2 and deployment only ever see `z_prior`. So the gate can
+# report a healthy teammate reconstruction while the prior on its own is useless. Reusing
+# the trained decoder to check would evaluate it off-manifold, hence a separate read-out
+# trained on the distribution it is scored on.
+#
+# Launch with policy/Diffusion-Policy/train_cls_stage1_det.sh after pointing config_name
+# at this file, or add `--config-name=cls_stage1_det_probe.yaml`.
+defaults:
+  - cls_stage1_det
+  - _self_
+
+name: cls_stage1_det_probe
+
+# Distinct prefix: this run carries extra probe parameters, so keep it off DET's artifacts.
+checkpoint_name: ${task_name}_ctxdetprobe_Agent${agent_id}_${data_num}
+
+contextualizer:
+  # Reads the full prior latent (not factorized here) and predicts teammates' futures.
+  prior_probe:
+    _target_: diffusion_policy.model.cls.ma_kinematics.MAKinematicsDecoder
+    state_dim: ${state_dim}
+    n_agents: ${eval:'${n_agents} - 1'}
+    n_future_states: ${n_future_states}
+    latent_dim: ${latent_dim}
+    d_model: 256
+    n_layers: 2
+    n_heads: 4
+    dim_feedforward: 512
+    dropout: 0.0
+  # True keeps this a measurement. Set false to turn it into a prior-only reconstruction
+  # loss that actively forces the prior to be sufficient -- a different experiment.
+  prior_probe_stop_grad: True
+  probe_weight: 1.0
