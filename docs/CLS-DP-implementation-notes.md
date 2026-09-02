@@ -729,6 +729,41 @@ must still print PASS on the teammate-reconstruction gate before Stage 2 starts.
 
 LiftBarrier Study B eval: **61 / 100**, matching Table II.
 
+### Study DET — deterministic latent (built, not yet trained)
+
+Ablates the stochasticity of the coordination latent, holding everything else fixed against
+Study B. Not a new objective: setting `sigma_prior = sigma_posterior = 1` in the Gaussian KL
+collapses it to `0.5*||z_E||^2`, so this is the same loss with the scale parameters frozen
+out. `beta` keeps its meaning and warm-up, and the distillation geometry is unchanged — the
+alignment term still depends only on the residual, so the prior is still trained purely by
+reconstruction.
+
+| Knob | Value |
+|---|---|
+| Latent | deterministic; encoders emit `z` directly, no scale head is constructed |
+| Sampling | none, anywhere. `latent_sample` cannot reintroduce it |
+| Configs | `cls_stage1_det.yaml`, `cls_dp_det.yaml` (inherit their baselines via Hydra defaults) |
+| Checkpoints | `checkpoints/LiftBarrier-rf_{ctxdet,clsdpdet}_Agent{0,1}_150/` |
+| Pipeline | `policy/Diffusion-Policy/train_study_det.sh` |
+| Eval | `eval_cls_sweep.sh ... clsdpdet` (9th arg selects the checkpoint family) |
+
+Config inheritance was verified by composition: the resolved configs differ from their Study B
+parents **only** in the deterministic flags, `latent_sample`, the run name and the checkpoint
+prefix. Adam, `beta` 0.1 / 0.4 warm-up, 100 epochs, K=100, horizon 8, `d_model` 768 and latent
+256 are all inherited, so any delta is attributable to the stochasticity.
+
+Reuses Study B's 14x14 SigLIP cache — the frozen encoders are untouched. The pipeline script
+asserts the cache has 197 tokens rather than silently training on a stale 4x4 one.
+
+**What this tests.** Whether the learned per-dimension `sigma_prior` was load-bearing. Under
+partial observability some coordination dimensions are genuinely unknowable from one frame, and
+a deterministic alignment has no way to say so — it forces the prior to match the posterior even
+there, and the usual result is mode-averaging. Watch `ctx_recon_others` against Study B: if it
+degrades, that is the mechanism showing up, not a bug.
+
+In deterministic mode the `ctx_kl` metric key holds the L2 alignment term. The key name is
+shared so the gate and epoch-averaging code stay common.
+
 ### Study B — ThreeRobotsStackCube (in progress)
 
 Same recipe, new task. Paper Table II is **20%** on this 3-agent stack. Official HuggingFace

@@ -157,9 +157,26 @@ displacements `Δq_{t,k} = q_{t+k} − q_t` for `k = 1…8`. Same data, ~8× mor
 intervening action sequence: it's uniquely determined by the endpoints and has fixed dimension at
 every horizon, whereas many action sequences can connect the same two configurations.
 
+**Why it isn't redundant with the existing reconstruction**, even though absolute states are already
+supervised. Supervising absolutes says nothing about whether the *errors* are correlated between
+adjacent timesteps. With `q_t = 1.000` and `q_{t+1} = 1.010`, two decodes each carrying 1% absolute
+error in opposite directions give `Δq̂ = −0.010` — right magnitude, wrong sign. Both endpoints look
+excellent; the displacement is useless. Displacements between adjacent steps are small by
+construction, so this is the normal case, not a corner case. PSG-JEPA puts it as: static grounding
+"supervises each endpoint independently and does not directly optimize a pairwise readout of their
+change."
+
+**But do it with one latent, not a pair.** PSG-JEPA needs a latent *pair* because their latent is a
+per-frame encoding — `q_t` comes from `z_t` and `q_{t+k}` from `z_{t+k}`. Ours is a whole-future
+summary: the decoder already emits `q_{t+1} … q_{t+8}` from a single latent, so differencing that
+output gets the same reweighting for free. A cross-latent pair head buys one extra thing —
+correlating errors across *separate* prior invocations, i.e. consistency of the decoded belief from
+one control cycle to the next — at the cost of a second prior pass (~2.5 GB extra activations at
+batch 512). Worth it only if rollouts actually look jittery. See
+[CLS-DP-variant-factorized-grounded.md](CLS-DP-variant-factorized-grounded.md) §5.3.
+
 **Caveat.** For *teammates* you can't take a delta relative to their current state, because the
-decoder never sees it. Cleanest factorization: predict teammate current state **and** displacement
-separately.
+decoder never sees it. Predict teammate current state **and** displacement separately.
 
 ---
 
@@ -332,7 +349,13 @@ async execution is what makes flow matching's speed matter.
 3. Is per-agent separate training actually necessary, or an artifact of small scale? Proposal 10
    tests this.
 4. Does the factorized latent stay factorized, or does `z_self` quietly absorb teammate information?
-   Needs a probe, not just an ablation.
+   Needs a probe, not just an ablation. Concretely: train a head on a **frozen** `z_self` to recover
+   teammate state. If it succeeds, the split is cosmetic.
+5. **Is the prior alone actually sufficient?** Stage 1 never runs the decoder on the prior's latent
+   by itself — every reconstruction uses `z_prior + residual`. But deployment has no residual. The
+   Stage 1 gate inherits this, so it can pass while the prior alone is useless. Logging a prior-only
+   reconstruction costs one extra decoder pass and no gradient, and it tests the mechanism the whole
+   method rests on. This is arguably the highest-value cheap experiment on the list.
 
 ---
 
