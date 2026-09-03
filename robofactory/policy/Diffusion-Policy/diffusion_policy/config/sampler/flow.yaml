@@ -1,0 +1,56 @@
+# @package _global_
+#
+# Flow-matching (rectified-flow / conditional-OT) head. Same U-Net, same conditioning, same
+# z cross-attention; only the transport between noise and actions changes. ~4 model calls
+# instead of 100.
+#
+# Select with `sampler=flow`. Composes with any latent variant:
+#   python train.py --config-name=cls_dp.yaml     sampler=flow    -> clsdpfm
+#   python train.py --config-name=cls_dp_det.yaml sampler=flow    -> clsdpdetfm
+#
+# See docs/CLS-DP-variant-flow-matching.md for the derivation of every knob below.
+
+head_tag: fm
+
+policy:
+  _target_: diffusion_policy.policy.cls_flow_matching_unet_image_policy.CLSFlowMatchingUnetImagePolicy
+
+  # There is no DDPM chain here. The parent class accepts null when num_inference_steps is
+  # given explicitly, which it always is below.
+  noise_scheduler: null
+
+  # Euler steps from sigma=1 (noise) to sigma=0 (data). Sweepable at eval without
+  # retraining via eval_multi_cls_dp.py --num-inference-steps.
+  num_inference_steps: 4
+
+  # euler: 1 model call per step. midpoint: 2 calls, second-order, often better at equal
+  # wall-clock when the step count is very low.
+  solver: euler
+
+  # How sigma is drawn during training. uniform adds no tuning axis, which keeps the first
+  # run a clean DDPM-to-flow swap. logit_normal (SD3) concentrates on mid-sigma; beta (pi0)
+  # emphasises high noise.
+  sigma_dist: uniform
+  sigma_dist_loc: 0.0
+  sigma_dist_scale: 1.0
+
+  # SD3/Flux time shift, sigma' = shift*sigma / (1 + (shift-1)*sigma). 1.0 disables it.
+  # CLS-DP-improvements.md section 4 argues the optimal shift here is ~0 because the action
+  # tensor is only 8x8 = 64 values, so this stays off by default.
+  shift: 1.0
+
+  # CRITICAL. SinusoidalPosEmb builds frequencies spanning 1.0 down to 1e-4, so a raw
+  # sigma in [0,1] leaves roughly one of 128 embedding dimensions informative and the model
+  # is close to blind to its own noise level. Scaling to [0,1000] matches what diffusers
+  # feeds its own U-Nets. Do not lower this.
+  timestep_scale: 1000.0
+
+  # Optional smoothness term on the finite difference along the horizon axis. Off so the
+  # first run is a pure swap; see docs/CLS-DP-variant-flow-matching.md section 4.
+  temporal_consistency_weight: 0.0
+  tc_space: velocity
+
+  # Set by the action_space group. null under action_space=raw.
+  action_autoencoder: ${action_latent.autoencoder}
+  # Optional checkpoint path produced by Stage 2a autoencoder training.
+  action_ae_ckpt: ${action_ae_ckpt}

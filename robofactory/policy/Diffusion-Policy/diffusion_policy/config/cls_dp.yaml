@@ -1,8 +1,16 @@
 # CLS-DP Stage 2: train the latent-conditioned action-expert.
 # One run per agent, after Stage 1. Launch with policy/Diffusion-Policy/train_cls_dp.sh
+#
+# Two axes are selectable as config groups, so they compose with every latent variant
+# (cls_dp_det, cls_dp_fg, ...) instead of forcing a cross-product of config files:
+#   sampler=ddpm|flow             which generative head denoises the action chunk
+#   action_space=raw|latent       whether the head runs on joints or on a learned chunk latent
+# Example: python train.py --config-name=cls_dp_det.yaml sampler=flow
 defaults:
   - _self_
   - task: cls_task
+  - sampler: ddpm
+  - action_space: raw
 
 name: cls_dp
 _target_: diffusion_policy.workspace.cls_robotworkspace.CLSRobotWorkspace
@@ -15,9 +23,19 @@ exp_name: "default"
 
 stage: 2
 
-checkpoint_name: ${task_name}_clsdp_Agent${agent_id}_${data_num}
+# One tag per axis, so any combination names itself and no two runs collide:
+#   latent_tag  cls_dp_det -> "det", cls_dp_fg -> "fg"
+#   head_tag    sampler/flow -> "fm"
+#   space_tag   action_space/latent -> "la"
+# All empty gives LiftBarrier-rf_clsdp_Agent0_150, unchanged from before the tags existed.
+latent_tag: ""
+head_tag: ""
+space_tag: ""
+checkpoint_name: ${task_name}_clsdp${latent_tag}${head_tag}${space_tag}_Agent${agent_id}_${data_num}
 # Frozen Stage 1 prior. Set by train_cls_dp.sh; leaving it null trains an untrained prior.
 contextualizer_ckpt: null
+# Frozen Stage 2a action autoencoder. Only read when action_space=latent.
+action_ae_ckpt: null
 
 shape_meta: ${task.shape_meta}
 
@@ -34,19 +52,8 @@ latent_dim: 256
 feature_dim: 768
 
 policy:
-  _target_: diffusion_policy.policy.cls_diffusion_unet_image_policy.CLSDiffusionUnetImagePolicy
-
+  # _target_, noise_scheduler and num_inference_steps come from the `sampler` group.
   shape_meta: ${shape_meta}
-
-  noise_scheduler:
-    _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
-    num_train_timesteps: 100
-    beta_start: 0.0001
-    beta_end: 0.02
-    beta_schedule: squaredcos_cap_v2
-    variance_type: fixed_small
-    clip_sample: True
-    prediction_type: epsilon
 
   # Standardized across all methods in the paper: ResNet-18 plus a lightweight MLP.
   obs_encoder:
@@ -78,7 +85,6 @@ policy:
   horizon: ${horizon}
   n_action_steps: ${eval:'${n_action_steps}+${n_latency_steps}'}
   n_obs_steps: ${n_obs_steps}
-  num_inference_steps: 100
   obs_as_global_cond: ${obs_as_global_cond}
   latent_dim: ${latent_dim}
   # Eq. 12 defines the deployed policy as a marginal over z, so sample rather than

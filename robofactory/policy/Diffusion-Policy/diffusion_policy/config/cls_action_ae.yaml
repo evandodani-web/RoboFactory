@@ -1,0 +1,67 @@
+# Stage 2a: action-chunk autoencoder training.
+#
+# This config is intentionally self-contained: it trains an `ActionChunkAutoencoder`
+# on the per-agent `action_agent{i}` arrays in the Stage 2 zarr, and never touches
+# images/SigLIP features.
+#
+# Usage:
+#   python train.py --config-name=cls_action_ae.yaml task_name=... data_num=... agent_id=...
+#
+# Example:
+#   bash policy/Diffusion-Policy/train_cls_action_ae.sh LiftBarrier-rf 150 0 2 42 0
+
+defaults:
+  - _self_
+
+name: cls_action_ae
+_target_: diffusion_policy.workspace.action_ae_workspace.ActionAEWorkspace
+
+task_name: LiftBarrier-rf
+agent_id: 0
+n_agents: 2
+data_num: 150
+
+horizon: 8
+action_dim: 8
+
+zarr_path: data/zarr_data/${task_name}_multi_${data_num}.zarr
+
+checkpoint_name: ${task_name}_actionae_Agent${agent_id}_${data_num}
+
+normalizer:
+  mode: limits
+
+dataloader:
+  batch_size: 256
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 2.0e-4
+  weight_decay: 1.0e-6
+
+training:
+  device: "cuda:0"
+  seed: 42
+  debug: False
+  resume: True
+  val_ratio: 0.2
+
+  num_epochs: 30
+  max_train_steps: null
+  max_val_steps: null
+  gradient_accumulate_every: 1
+
+  checkpoint_every: 5
+
+action_autoencoder:
+  _target_: diffusion_policy.model.cls.action_autoencoder.ActionChunkAutoencoder
+  horizon: ${horizon}
+  action_dim: ${action_dim}
+  n_tokens: 4
+  latent_dim: 16
+  d_model: 256
+  n_layers: 2
+  n_heads: 4
+  dim_feedforward: 512
+  dropout: 0.0
+

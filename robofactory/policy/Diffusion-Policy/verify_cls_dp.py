@@ -322,7 +322,201 @@ def main():
     check("clearing stop-grad reaches the prior", len(attached) > 0)
     ctx.prior_probe_stop_grad = True
 
+    print("\n[9] Flow-matching transport + sampler correctness")
+    from diffusion_policy.model.cls.flow_matching import RectifiedFlowTransport
+    from diffusion_policy.model.diffusion.positional_embedding import SinusoidalPosEmb
+    from diffusion_policy.policy.cls_flow_matching_unet_image_policy import (
+        CLSFlowMatchingUnetImagePolicy,
+    )
+
+    transport = RectifiedFlowTransport(timestep_scale=1000.0)
+
+    # --- transport endpoint identities
+    B_flow = 4
+    H = 8
+    D = STATE_DIM
+    x1 = torch.randn(B_flow, H, D)
+    noise = torch.randn_like(x1)
+    sigmas = torch.tensor([1.0, 0.5, 0.25, 0.0])
+
+    # forward interpolation
+    x_sigma = transport.interpolate(x1, noise, sigmas)
+    # sigma=1 -> noise; sigma=0 -> data
+    check("sigma=1 gives noise", torch.allclose(x_sigma[0], noise[0]))
+    check("sigma=0 gives data", torch.allclose(x_sigma[-1], x1[-1]))
+
+    v = transport.velocity_target(x1, noise)
+    x1_recon = transport.implied_x1(x_sigma, sigmas, v)
+    check("implied_x1 inversion holds", torch.allclose(x1_recon, x1, atol=1e-6))
+
+    # --- Euler integration matches diffusers' reference on the same sigma grid
+    from diffusers.schedulers.scheduling_flow_match_euler_discrete import (
+        FlowMatchEulerDiscreteScheduler,
+    )
+
+    ref = FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000)
+    N_STEPS = 4
+    ref.set_timesteps(N_STEPS)
+
+    # Our sigma schedule must match diffusers exactly for the reference comparison.
+    ours_sigmas = transport.sigma_schedule(
+        N_STEPS, device="cpu", dtype=torch.float32
+    )
+    check(
+        "sigma schedule matches diffusers",
+        torch.allclose(ours_sigmas, ref.sigmas, atol=0, rtol=0),
+    )
+
+    model = lambda x, t_model: 0.123 * x  # deterministic velocity prediction
+    torch.manual_seed(0)
+    eps = torch.randn_like(x1)
+
+    # ref loop
+    x_ref = eps.clone()
+    ref.set_timesteps(N_STEPS)
+    for t in ref.timesteps:
+        mo = model(x_ref, t)
+        x_ref = ref.step(mo, t, x_ref).prev_sample
+
+    # ours loop
+    torch.manual_seed(0)
+    x_ours = transport.sample(
+        model_fn=lambda x, t_model: model(x, t_model),
+        shape=x1.shape,
+        num_steps=N_STEPS,
+        device=x1.device,
+        dtype=x1.dtype,
+        noise=eps,
+    )
+    check("Euler sampling matches diffusers", torch.allclose(x_ours, x_ref, atol=1e-6))
+
+    # --- model-call count in the full policy path
+    class DummyObsEncoder(torch.nn.Module):
+        """Returns fixed-width features and ignores the actual observation."""
+
+        def __init__(self, out_dim: int):
+            super().__init__()
+            self.out_dim = out_dim
+
+        def output_shape(self):
+            return (self.out_dim,)
+
+        def forward(self, obs_dict):
+            # obs_dict comes from dict_apply() and has shape (B*n_obs_steps, ...)
+            # Use any tensor's leading dim as the effective batch size.
+            any_tensor = next(iter(obs_dict.values()))
+            batch = any_tensor.shape[0]
+            return torch.zeros(batch, self.out_dim, device=any_tensor.device, dtype=any_tensor.dtype)
+
+    OBS_FEATURE_DIM = 16
+    N_OBS_STEPS = 3
+    # Reuse the module-level LATENT_DIM constant; do not shadow it.
+
+    shape_meta = {
+        "action": {"shape": [STATE_DIM]},
+        "obs": {"head_cam": {"shape": [3, 16, 16], "type": "rgb"}, "agent_pos": {"shape": [STATE_DIM], "type": "low_dim"}},
+    }
+
+    prior_net = PriorNet(
+        feature_dim=64, latent_dim=LATENT_DIM, d_model=64, n_layers=1, n_heads=4, dim_feedforward=128
+    )
+    obs_encoder = DummyObsEncoder(OBS_FEATURE_DIM)
+
+    policy = CLSFlowMatchingUnetImagePolicy(
+        shape_meta=shape_meta,
+        obs_encoder=obs_encoder,
+        prior_net=prior_net,
+        horizon=H,
+        n_action_steps=H,
+        n_obs_steps=N_OBS_STEPS,
+        latent_dim=LATENT_DIM,
+        num_inference_steps=3,
+        down_dims=[32, 64],
+        diffusion_step_embed_dim=32,
+        kernel_size=3,
+        n_cond_tokens=2,
+        cond_token_dim=32,
+        cross_attn_heads=2,
+        solver="euler",
+        temporal_consistency_weight=0.0,
+        tc_space="velocity",
+    )
+
+    # Minimal normalizer for `predict_action()`.
+    normalizer = LinearNormalizer()
+    normalizer.fit(
+        {
+            "action": torch.randn(64, STATE_DIM),
+            "agent_pos": torch.randn(64, STATE_DIM),
+            "head_cam": torch.rand(8, 3, 16, 16),
+        }
+    )
+    policy.set_normalizer(normalizer)
+
+    obs_dict = {
+        "head_cam": torch.rand(BATCH, N_OBS_STEPS, 3, 16, 16),
+        "agent_pos": torch.randn(BATCH, N_OBS_STEPS, STATE_DIM),
+        # Provide cls_latent directly to avoid depending on the frozen prior's exact shapes.
+        "cls_latent": torch.randn(BATCH, LATENT_DIM),
+    }
+
+    policy.eval()
+    calls = {"n": 0}
+    orig = policy.model.forward
+
+    def counted(*a, **k):
+        calls["n"] += 1
+        return orig(*a, **k)
+
+    policy.model.forward = counted
+    with torch.no_grad():
+        out = policy.predict_action(obs_dict)
+
+    check("flow Euler model calls == num_inference_steps", calls["n"] == 3)
+    check("flow action_pred spans full horizon", tuple(out["action_pred"].shape) == (BATCH, H, STATE_DIM))
+    check("flow executed action is 6 steps", tuple(out["action"].shape) == (BATCH, 6, STATE_DIM))
+
+    # --- timestep-scale embedding sanity
+    pos = SinusoidalPosEmb(dim=128)
+    sig = torch.linspace(0, 1, 10).to(torch.float32)
+    emb_raw = pos(sig)  # (10,128)
+    emb_scaled = pos(sig * transport.timestep_scale)
+    var_raw = emb_raw.var(dim=0)
+    var_scaled = emb_scaled.var(dim=0)
+    # The scaled schedule should activate more dimensions with non-trivial variance.
+    threshold = var_raw.max().item() * 0.05 + 1e-7
+    n_raw = int((var_raw > threshold).sum().item())
+    n_scaled = int((var_scaled > threshold).sum().item())
+    check("timestep_scale makes embedding more informative", n_scaled >= n_raw)
+
+    # --- sigma^2 relation between velocity-space and clean-space delta errors
+    # If v_pred = v_target + dv, then x1_pred = x1 - sigma*dv, and all linear deltas
+    # must scale by sigma^2 in squared error.
+    sigma = torch.tensor(0.3, dtype=torch.float32)
+    dv = torch.randn_like(v)
+    v_pred = v + dv
+    x1_pred = transport.implied_x1(x_sigma, sigmas, v_pred)
+    # Compare per-sigma sample by selecting the row whose sigma is 0.5 (index 1).
+    idx = 1
+    sigma_i = sigmas[idx]
+
+    def _delta(x: torch.Tensor) -> torch.Tensor:
+        # (B, H, D) -> (B, H-1, D)
+        return x[:, 1:] - x[:, :-1]
+
+    vel_delta_err = _delta(v_pred)[idx] - _delta(v)[idx]
+    clean_delta_err = _delta(x1_pred)[idx] - _delta(x1)[idx]
+    mse_vel = vel_delta_err.pow(2).mean()
+    mse_clean = clean_delta_err.pow(2).mean()
+    ratio = (mse_clean / (mse_vel + 1e-12)).item()
+    check(
+        "clean delta mse ~= sigma^2 * velocity delta mse",
+        abs(ratio - sigma_i.item() ** 2) < 1e-3,
+    )
+
     print("\nALL CLS-DP MODULE CHECKS PASSED\n")
+
+    # Keep the original final print for compatibility with any external log parsers.
 
 
 if __name__ == "__main__":

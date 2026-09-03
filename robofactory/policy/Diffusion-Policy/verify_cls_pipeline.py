@@ -418,6 +418,92 @@ def test_action_expert(ds2, contextualizer):
     check("latent_sample=True draws from the prior", not torch.allclose(a, c))
 
 
+def test_flow_action_expert(ds2, contextualizer):
+    """Flow-matching Stage 2 expert: loss finiteness + sampling shapes + U-Net call count."""
+    print("\n[4b] CLSFlowMatchingUnetImagePolicy (Stage 2 loss + sampling)")
+    import copy
+    from diffusion_policy.model.vision.model_getter import get_resnet
+    from diffusion_policy.model.vision.multi_image_obs_encoder import MultiImageObsEncoder
+    from diffusion_policy.policy.cls_flow_matching_unet_image_policy import (
+        CLSFlowMatchingUnetImagePolicy,
+    )
+
+    torch.manual_seed(0)
+    shape_meta = {
+        "obs": {
+            "head_cam": {"shape": [3, IMG_H, IMG_W], "type": "rgb"},
+            "agent_pos": {"shape": [STATE_DIM], "type": "low_dim"},
+        },
+        "action": {"shape": [STATE_DIM]},
+    }
+
+    policy = CLSFlowMatchingUnetImagePolicy(
+        shape_meta=shape_meta,
+        obs_encoder=MultiImageObsEncoder(
+            shape_meta=shape_meta,
+            rgb_model=get_resnet("resnet18", weights=None),
+            use_group_norm=True,
+            share_rgb_model=False,
+            imagenet_norm=True,
+        ),
+        prior_net=copy.deepcopy(contextualizer.prior_net),
+        horizon=HORIZON,
+        n_action_steps=HORIZON,
+        n_obs_steps=N_OBS,
+        latent_dim=LATENT_DIM,
+        latent_sample=True,
+        num_inference_steps=3,
+        down_dims=[32, 64],
+        diffusion_step_embed_dim=32,
+        kernel_size=3,
+        n_cond_tokens=2,
+        cond_token_dim=32,
+        cross_attn_heads=2,
+        solver="euler",
+        temporal_consistency_weight=0.0,
+        tc_space="velocity",
+    )
+    policy.set_normalizer(ds2.get_normalizer())
+
+    check("prior_net is frozen", not any(p.requires_grad for p in policy.prior_net.parameters()))
+    policy.train()
+    check("prior_net stays in eval after .train()", not policy.prior_net.training)
+
+    batch = ds2.postprocess(ds2[np.arange(BATCH)], torch.device("cpu"))
+    loss = policy.compute_loss(batch)
+    check("flow Stage 2 loss is finite", bool(np.isfinite(loss.item())), f"{loss.item():.4f}")
+    loss.backward()
+
+    prior_grads = [p.grad for p in policy.prior_net.parameters() if p.grad is not None]
+    check("no gradient reaches the frozen prior (sg / no_grad)", len(prior_grads) == 0,
+          f"{len(prior_grads)} tensors with grad")
+
+    policy.eval()
+    obs_dict = dict(batch["obs"])
+    for key in ("prior_image_tokens", "prior_text_tokens", "prior_text_mask"):
+        obs_dict[key] = batch[key]
+
+    calls = {"n": 0}
+    orig = policy.model.forward
+
+    def counted(*a, **k):
+        calls["n"] += 1
+        return orig(*a, **k)
+
+    policy.model.forward = counted
+    with torch.no_grad():
+        out = policy.predict_action(obs_dict)
+
+    check("flow executed action is 6 steps", tuple(out["action"].shape) == (BATCH, 6, STATE_DIM),
+          str(tuple(out["action"].shape)))
+    check("flow action_pred spans full horizon",
+          tuple(out["action_pred"].shape) == (BATCH, HORIZON, STATE_DIM),
+          str(tuple(out["action_pred"].shape)))
+    check("flow latent is returned", tuple(out["cls_latent"].shape) == (BATCH, LATENT_DIM))
+    check("actions are finite", bool(torch.isfinite(out["action"]).all()))
+    check("flow Euler model calls match num_inference_steps", calls["n"] == 3, str(calls["n"]))
+
+
 def load_cfg(name, zarr_path, overrides):
     """Compose through Hydra, so the defaults lists in the *_det configs are honoured."""
     from hydra import compose, initialize_config_dir
@@ -502,6 +588,49 @@ def test_workspaces(workdir, zarr_path):
     rebuilt = CLSRobotWorkspace(saved, output_dir=out2)
     rebuilt.load_payload(payload)
     check("checkpoint round-trips without the Stage 1 file", True)
+
+    # Flow-matching Stage 2: same Stage 1 prior, different transport/sampler.
+    print("\n[5b] Flow-matching Stage 2 workspaces (debug mode, real loops)")
+    small_policy_flow = [
+        "policy.prior_net.d_model=64", "policy.prior_net.n_layers=1",
+        "policy.prior_net.n_heads=4", "policy.prior_net.dim_feedforward=128",
+        f"feature_dim={FEATURE_DIM}", f"latent_dim={LATENT_DIM}", "agent_id=0",
+        f"dataloader.batch_size={BATCH}", f"val_dataloader.batch_size={BATCH}",
+        "policy.down_dims=[32,64]", "policy.diffusion_step_embed_dim=32",
+        "policy.kernel_size=3", "policy.n_cond_tokens=2", "policy.cond_token_dim=32",
+        "policy.cross_attn_heads=2",
+        # Flow-matching uses `num_inference_steps` directly as solver steps.
+        "policy.num_inference_steps=2", "policy.solver=euler",
+        # No DDPM noise scheduler exists in the flow head.
+        f"contextualizer_ckpt={ckpt}",
+        f"task.shape_meta.obs.head_cam.shape=[3,{IMG_H},{IMG_W}]",
+    ]
+    out_flow = os.path.join(workdir, "out_flow_stage2")
+    cfg_flow = load_cfg("cls_dp.yaml", zarr_path, small_policy_flow + ["sampler=flow"])
+    ws_flow = CLSRobotWorkspace(cfg_flow, output_dir=out_flow)
+    check("flow Stage 2 loads the frozen prior from the Stage 1 checkpoint", True)
+
+    os.chdir(workdir)
+    try:
+        ws_flow.run()
+    finally:
+        os.chdir(cwd)
+
+    ckpt_flow = os.path.join(
+        workdir, "checkpoints", f"{TASK}_clsdpfm_Agent0_{N_EPISODES}", "1.ckpt"
+    )
+    check("flow Stage 2 wrote a checkpoint", os.path.isfile(ckpt_flow), ckpt_flow)
+
+    payload = torch.load(open(ckpt_flow, "rb"), pickle_module=dill, weights_only=False)
+    saved = payload["cfg"]
+    check("flow checkpoint stores the workspace target",
+          saved._target_.endswith("CLSRobotWorkspace"))
+    check("flow checkpoint contains prior_net weights",
+          any(k.startswith("prior_net.") for k in payload["state_dicts"]["model"]))
+    saved.contextualizer_ckpt = None
+    rebuilt = CLSRobotWorkspace(saved, output_dir=out_flow)
+    rebuilt.load_payload(payload)
+    check("flow checkpoint round-trips without the Stage 1 file", True)
 
 
 DET_CTX_OVERRIDES = [
@@ -737,7 +866,13 @@ def test_probe_detects_information():
     informative[:, :width] = flat[:, :width]
     noise = torch.randn(BATCH, TEAM_DIM)
 
-    def fit(latent, steps=300):
+    # If we train too long, the probe can overfit even when latent is pure noise,
+    # making both errors numerically ~0 and the comparison brittle. 150 steps keeps
+    # a meaningful gap while still exercising the probe machinery.
+    def fit(latent, steps=150):
+        # Use the same probe initialization for informative vs noise latents so the
+        # comparison is attributable to the latent content, not random weight init.
+        torch.manual_seed(0)
         probe = MAKinematicsDecoder(
             state_dim=STATE_DIM, n_agents=N_OTHERS, n_future_states=N_FUTURE,
             latent_dim=TEAM_DIM, d_model=64, n_layers=1, n_heads=4, dim_feedforward=128,
@@ -848,6 +983,7 @@ def main():
         ds1, ds2 = test_dataset_alignment(zarr_path)
         contextualizer = test_contextualizer(ds1)
         test_action_expert(ds2, contextualizer)
+        test_flow_action_expert(ds2, contextualizer)
         test_workspaces(workdir, zarr_path)
         test_deterministic_variant(workdir, zarr_path)
         test_eval_script(workdir)

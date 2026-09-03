@@ -18,7 +18,7 @@ Table I's "Execution steps: 6" and keeps the `w/o CLS` ablation directly compara
 repo's DP. See docs/CLS-DP-implementation-notes.md section 1.
 """
 
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -47,7 +47,9 @@ class CLSDiffusionUnetImagePolicy(BaseImagePolicy):
     def __init__(
         self,
         shape_meta: dict,
-        noise_scheduler: DDPMScheduler,
+        # May be None only for subclasses that do not denoise through a DDPM chain (see
+        # CLSFlowMatchingUnetImagePolicy); they must then pass num_inference_steps.
+        noise_scheduler: Optional[DDPMScheduler],
         obs_encoder: MultiImageObsEncoder,
         prior_net: nn.Module,
         horizon,
@@ -79,7 +81,10 @@ class CLSDiffusionUnetImagePolicy(BaseImagePolicy):
         action_dim = action_shape[0]
         obs_feature_dim = obs_encoder.output_shape()[0]
 
-        model = CLSConditionalUnet1D(
+        # Captured rather than passed inline so subclasses can rebuild the denoiser at a
+        # different input width without having to redeclare this whole signature. The
+        # values and the resulting module are exactly as before.
+        self._denoiser_kwargs = dict(
             input_dim=action_dim,
             latent_dim=latent_dim,
             local_cond_dim=None,
@@ -93,6 +98,7 @@ class CLSDiffusionUnetImagePolicy(BaseImagePolicy):
             cond_token_dim=cond_token_dim,
             cross_attn_heads=cross_attn_heads,
         )
+        model = CLSConditionalUnet1D(**self._denoiser_kwargs)
 
         self.obs_encoder = obs_encoder
         self.model = model
@@ -123,6 +129,11 @@ class CLSDiffusionUnetImagePolicy(BaseImagePolicy):
         self.kwargs = kwargs
 
         if num_inference_steps is None:
+            if noise_scheduler is None:
+                raise ValueError(
+                    "num_inference_steps must be given explicitly when noise_scheduler "
+                    "is None; there is no training chain length to fall back on."
+                )
             num_inference_steps = noise_scheduler.config.num_train_timesteps
         self.num_inference_steps = num_inference_steps
 

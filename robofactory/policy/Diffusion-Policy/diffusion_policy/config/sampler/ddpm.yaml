@@ -1,0 +1,25 @@
+# @package _global_
+#
+# The reproduced baseline head: 100-step DDPM epsilon-prediction, exactly as in the paper's
+# Table I. This is Study B's configuration and must not drift -- it is what the 61% on
+# LiftBarrier was measured with.
+#
+# Selected by default from cls_dp.yaml's defaults list, so `sampler=ddpm` is a no-op.
+
+head_tag: ""
+
+policy:
+  _target_: diffusion_policy.policy.cls_diffusion_unet_image_policy.CLSDiffusionUnetImagePolicy
+
+  noise_scheduler:
+    _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
+    num_train_timesteps: 100
+    beta_start: 0.0001
+    beta_end: 0.02
+    beta_schedule: squaredcos_cap_v2
+    variance_type: fixed_small
+    clip_sample: True
+    prediction_type: epsilon
+
+  # Paper Table I "Denoising steps K = 100". Full reverse chain, no step skipping.
+  num_inference_steps: 100

@@ -5,7 +5,9 @@ sys.path.insert(0, "./policy/Diffusion-Policy")
 
 import json
 import os
+import time
 from collections import defaultdict
+from contextlib import contextmanager
 
 import dill
 import gymnasium as gym
@@ -71,13 +73,21 @@ class Args:
 
     ckpt_prefix: str = "clsdp"
     """Checkpoint family to load: checkpoints/{task}_{ckpt_prefix}_Agent{i}_{data_num}/.
-    Use 'clsdpdet' for the deterministic-latent variant."""
+    Use 'clsdpdet' for the deterministic-latent variant, 'clsdpfm' for flow matching."""
 
     siglip_model: str = DEFAULT_MODEL_NAME
     siglip_pool_grid: int = 14
 
     latent_sample: Optional[bool] = None
     """Override the checkpoint's latent_sample. True marginalises over z (Eq. 12)."""
+
+    num_inference_steps: Optional[int] = None
+    """Override the checkpoint's sampler step count. The flow-matching expert is trained
+    once and evaluated at several step counts, so this makes the sweep a pure
+    inference-time experiment rather than a retraining one."""
+
+    timing_json: Optional[str] = None
+    """Write per-episode sampler latency here. eval_cls_sweep.sh aggregates these."""
 
 
 def instruction_task_name(task_name):
@@ -114,6 +124,62 @@ def get_policy(checkpoint, output_dir, device):
     policy.to(torch.device(device))
     policy.eval()
     return policy
+
+
+class SamplerStats:
+    """Wall-clock and denoiser-call accounting for one agent's policy.
+
+    The whole point of the flow-matching variant is latency, and nothing in this repo
+    measured it before. Two numbers are kept deliberately separate:
+
+      * `ms_per_action` -- how long one policy call takes, which is what the sampler
+        change actually moves.
+      * `denoiser_calls_per_action` -- how many U-Net forwards that cost, which is the
+        number the swap is supposed to cut from 100 to a handful.
+
+    Episode wall-clock is a third, much less flattering number: `predict_action` runs once
+    per macro-cycle and the following 6 executed steps are TOPP smoothing and simulator
+    substeps that this change does not touch.
+    """
+
+    def __init__(self):
+        self.actions = 0
+        self.denoiser_calls = 0
+        self.total_ms = 0.0
+
+    def attach(self, policy):
+        """Count U-Net forwards by wrapping the bound method, not the module."""
+        inner = policy.model.forward
+
+        def counting_forward(*args, **kwargs):
+            self.denoiser_calls += 1
+            return inner(*args, **kwargs)
+
+        policy.model.forward = counting_forward
+
+    @contextmanager
+    def measure(self, device):
+        # CUDA kernels are async, so an unsynchronized timer measures queueing, not work.
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        start = time.perf_counter()
+        try:
+            yield
+        finally:
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            self.total_ms += (time.perf_counter() - start) * 1000.0
+            self.actions += 1
+
+    def summary(self):
+        actions = max(self.actions, 1)
+        return {
+            "policy_calls": self.actions,
+            "denoiser_calls": self.denoiser_calls,
+            "ms_per_action": round(self.total_ms / actions, 3),
+            "denoiser_calls_per_action": round(self.denoiser_calls / actions, 3),
+            "total_ms": round(self.total_ms, 1),
+        }
 
 
 class CLSRunner(DPRunner):
@@ -168,6 +234,7 @@ class CLSDP:
         text_mask,
         latent_sample=None,
         ckpt_prefix="clsdp",
+        num_inference_steps=None,
     ):
         checkpoint = (
             f"checkpoints/{task_name}_{ckpt_prefix}_Agent{agent_id}_{data_num}/"
@@ -176,6 +243,10 @@ class CLSDP:
         self.policy = get_policy(checkpoint, None, "cuda:0")
         if latent_sample is not None:
             self.policy.latent_sample = latent_sample
+        if num_inference_steps is not None:
+            self.policy.num_inference_steps = num_inference_steps
+        self.stats = SamplerStats()
+        self.stats.attach(self.policy)
         self.runner = CLSRunner(
             output_dir=None,
             siglip=siglip,
@@ -187,7 +258,8 @@ class CLSDP:
         self.runner.update_obs(observation)
 
     def get_action(self, observation=None):
-        return self.runner.get_action(self.policy, observation)
+        with self.stats.measure(self.policy.device):
+            return self.runner.get_action(self.policy, observation)
 
     def get_last_obs(self):
         return self.runner.obs[-1]
@@ -201,6 +273,50 @@ def _is_success(info):
     if isinstance(success, np.ndarray):
         return bool(success.reshape(-1)[0])
     return bool(success)
+
+
+def report_and_finish(cls_models, args, env_id, verdict, record_dir, episode_ms):
+    """Emit timing, then the verdict.
+
+    eval_cls_sweep.sh reads the *last* line of the log to decide success, so the verdict
+    must stay last no matter what else gets printed here.
+    """
+    per_agent = [m.stats.summary() for m in cls_models]
+    policy_ms = sum(a["total_ms"] for a in per_agent)
+    payload = {
+        "env_id": env_id,
+        "seed": args.seed[0] if args.seed else None,
+        "ckpt_prefix": args.ckpt_prefix,
+        "checkpoint_num": args.checkpoint_num,
+        "num_inference_steps": cls_models[0].policy.num_inference_steps,
+        "solver": getattr(
+            getattr(cls_models[0].policy, "transport", None), "solver", "ddpm"
+        ),
+        "success": verdict == "success",
+        # Kept apart on purpose: the sampler swap moves policy_ms, while episode_ms is
+        # dominated by TOPP smoothing and simulator substeps that it does not touch.
+        "policy_ms_total": round(policy_ms, 1),
+        "episode_ms_total": round(episode_ms, 1),
+        "policy_fraction_of_episode": (
+            round(policy_ms / episode_ms, 4) if episode_ms > 0 else None
+        ),
+        "per_agent": per_agent,
+    }
+    mean_ms = sum(a["ms_per_action"] for a in per_agent) / len(per_agent)
+    mean_calls = sum(a["denoiser_calls_per_action"] for a in per_agent) / len(per_agent)
+    print(
+        f"timing: {mean_ms:.1f} ms/action, {mean_calls:.1f} denoiser calls/action, "
+        f"policy {payload['policy_ms_total']:.0f} ms of {payload['episode_ms_total']:.0f} "
+        f"ms episode"
+    )
+    if args.timing_json:
+        os.makedirs(os.path.dirname(os.path.abspath(args.timing_json)), exist_ok=True)
+        with open(args.timing_json, "w") as f:
+            json.dump(payload, f, indent=2)
+
+    if record_dir:
+        print(f"Saving video to {record_dir}")
+    print(verdict)
 
 
 def get_model_input(observation, agent_pos, agent_id):
@@ -316,9 +432,15 @@ def main(args: Args):
             text_mask,
             latent_sample=args.latent_sample,
             ckpt_prefix=args.ckpt_prefix,
+            num_inference_steps=args.num_inference_steps,
         )
         for agent_id in range(agent_num)
     ]
+    head = cls_models[0].policy
+    print(
+        f"sampler: {type(head).__name__} steps={head.num_inference_steps} "
+        f"solver={getattr(getattr(head, 'transport', None), 'solver', 'ddpm')}"
+    )
 
     if args.seed is not None and env.action_space is not None:
         env.action_space.seed(args.seed[0])
@@ -337,6 +459,7 @@ def main(args: Args):
 
     info = {}
     step_count = 0
+    episode_start = time.perf_counter()
     while True:
         if verbose:
             print("Iteration:", step_count)
@@ -418,15 +541,25 @@ def main(args: Args):
             env.render()
         if _is_success(info):
             env.close()
-            if record_dir:
-                print(f"Saving video to {record_dir}")
-            print("success")
+            report_and_finish(
+                cls_models,
+                args,
+                env_id,
+                "success",
+                record_dir,
+                (time.perf_counter() - episode_start) * 1000.0,
+            )
             return
 
     env.close()
-    if record_dir:
-        print(f"Saving video to {record_dir}")
-    print("failed")
+    report_and_finish(
+        cls_models,
+        args,
+        env_id,
+        "failed",
+        record_dir,
+        (time.perf_counter() - episode_start) * 1000.0,
+    )
 
 
 if __name__ == "__main__":

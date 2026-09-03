@@ -1,0 +1,42 @@
+# @package _global_
+#
+# The head denoises a learned latent of the action chunk instead of raw joints. The frozen
+# decoder then acts as a smoothness prior: it can only emit trajectories on the
+# demonstration manifold, so high-frequency jitter is not representable.
+#
+# Requires `sampler=flow`. The DDPM head has no latent path and CLSRobotWorkspace raises if
+# you pair them.
+#
+# Requires a Stage 2a autoencoder checkpoint. Train it first:
+#   bash policy/Diffusion-Policy/train_cls_action_ae.sh LiftBarrier-rf 150 0 2 42 0
+# then pass action_ae_ckpt=... (train_cls_dp_fm.sh does this for you).
+#
+# Motivation is a hypothesis, not a measured result -- see
+# docs/CLS-DP-variant-flow-matching.md section 5 on the unverifiable CoLA-Flow citation.
+
+space_tag: la
+
+action_latent:
+  enabled: true
+
+  # n_tokens must survive the U-Net's downsampling: with down_dims of length L the encoder
+  # halves the sequence L-1 times, so n_tokens must be divisible by 2**(L-1).
+  # ActionChunkAutoencoder asserts this rather than failing as a shape error mid-run.
+  n_tokens: 4
+  dim: 16
+
+  autoencoder:
+    _target_: diffusion_policy.model.cls.action_autoencoder.ActionChunkAutoencoder
+    horizon: ${horizon}
+    action_dim: 8
+    n_tokens: ${action_latent.n_tokens}
+    latent_dim: ${action_latent.dim}
+    d_model: 256
+    n_layers: 2
+    n_heads: 4
+    dim_feedforward: 512
+    dropout: 0.0
+
+policy:
+  # 4 latent tokens only survive two halvings (4 -> 2 -> 1), so drop the third level.
+  down_dims: [256, 512]

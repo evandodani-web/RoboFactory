@@ -170,6 +170,9 @@ python policy/Diffusion-Policy/verify_cls_pipeline.py  # end to end on synthetic
   Checkpoints are `*_150`. See
   [docs/CLS-DP-implementation-notes.md](docs/CLS-DP-implementation-notes.md)
   section 17.
+- **Study FM (flow-matching Stage 2):** replaces the Stage 2 DDPM sampler with a
+  rectified-flow / conditional-OT head (`sampler=flow`, checkpoint prefix `clsdpfm`).
+  Temporal-consistency is optional and defaults off.
 - **Study A (done):** 100 demos, AdamW, 4×4 pooled SigLIP (17 tokens). LiftBarrier
   eval was 37/100. Checkpoints `*_100` and
   `eval_results/LiftBarrier-rf_100_100_20260829_024814/` are left in place.

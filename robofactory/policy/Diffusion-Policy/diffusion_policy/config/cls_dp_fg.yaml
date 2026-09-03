@@ -15,4 +15,4 @@ defaults:
 
 name: cls_dp_fg
 
-checkpoint_name: ${task_name}_clsdpfg_Agent${agent_id}_${data_num}
+latent_tag: fg

@@ -63,46 +63,74 @@ if n < 150:
     raise SystemExit(f"need 150 demos, json only has {n}")
 PY
 
-echo "=== parse h5 -> pkl (3 agents) ==="
-python script/parse_h5_to_pkl_multi.py \
-    --task_name "${TASK}" --load_num "${LOAD_NUM}" --agent_num "${N_AGENTS}" \
-    | tee "${LOG_DIR}/parse_h5.log"
+if [ ! -d "data/pkl_data/${TASK}_Agent0/episode149" ]; then
+    echo "=== parse h5 -> pkl (3 agents) ==="
+    python script/parse_h5_to_pkl_multi.py \
+        --task_name "${TASK}" --load_num "${LOAD_NUM}" --agent_num "${N_AGENTS}" \
+        | tee "${LOG_DIR}/parse_h5.log"
+else
+    echo "=== skip h5 -> pkl (episode149 already present) ==="
+fi
 
-echo "=== pack pkl -> multi-agent zarr ==="
-python script/parse_pkl_to_zarr_multi.py \
-    --task_name "${TASK}" --load_num "${LOAD_NUM}" --agent_num "${N_AGENTS}" \
-    | tee "${LOG_DIR}/parse_zarr.log"
+if [ ! -d "${ZARR}" ]; then
+    echo "=== pack pkl -> multi-agent zarr ==="
+    python script/parse_pkl_to_zarr_multi.py \
+        --task_name "${TASK}" --load_num "${LOAD_NUM}" --agent_num "${N_AGENTS}" \
+        | tee "${LOG_DIR}/parse_zarr.log"
+else
+    echo "=== skip zarr pack (${ZARR} exists) ==="
+fi
 
-echo "=== cache SigLIP at 14x14 ==="
-python script/precompute_siglip_features.py \
-    --zarr_path "${ZARR}" \
-    --pool_grid 14 \
-    --overwrite \
-    --device cuda \
-    --batch_size 64 | tee "${LOG_DIR}/precompute_siglip.log"
+python - <<PY
+import zarr, sys
+r = zarr.open("${ZARR}", "r")
+n = int(r.attrs.get("siglip_n_image_tokens", 0))
+print(f"cached SigLIP tokens: {n}")
+sys.exit(0 if n == 197 else 1)
+PY
+siglip_ok=$?
+if [ "${siglip_ok}" -ne 0 ]; then
+    echo "=== cache SigLIP at 14x14 ==="
+    python script/precompute_siglip_features.py \
+        --zarr_path "${ZARR}" \
+        --pool_grid 14 \
+        --overwrite \
+        --device cuda \
+        --batch_size 64 | tee "${LOG_DIR}/precompute_siglip.log"
+else
+    echo "=== skip SigLIP cache (197 tokens already present) ==="
+fi
 
 for agent in 0 1 2; do
+    ckpt="checkpoints/${TASK}_ctx_Agent${agent}_${LOAD_NUM}/100.ckpt"
+    if [ -f "${ckpt}" ]; then
+        echo "=== skip Stage 1 agent ${agent} (${ckpt} exists) ==="
+        continue
+    fi
     echo "=== Stage 1 agent ${agent} ==="
     bash policy/Diffusion-Policy/train_cls_stage1.sh \
         "${TASK}" "${LOAD_NUM}" "${agent}" "${N_AGENTS}" "${SEED}" "${GPU}" \
         | tee "${LOG_DIR}/stage1_agent${agent}.log"
-    ckpt="checkpoints/${TASK}_ctx_Agent${agent}_${LOAD_NUM}/100.ckpt"
     if [ ! -f "${ckpt}" ]; then
         echo "MISSING ${ckpt}"
         exit 1
     fi
-    if ! grep -q "-> PASS" "${LOG_DIR}/stage1_agent${agent}.log"; then
+    if ! grep -q -- "-> PASS" "${LOG_DIR}/stage1_agent${agent}.log"; then
         echo "Stage 1 gate FAILED for agent ${agent}; not starting Stage 2"
         exit 1
     fi
 done
 
 for agent in 0 1 2; do
+    ckpt="checkpoints/${TASK}_clsdp_Agent${agent}_${LOAD_NUM}/100.ckpt"
+    if [ -f "${ckpt}" ]; then
+        echo "=== skip Stage 2 agent ${agent} (${ckpt} exists) ==="
+        continue
+    fi
     echo "=== Stage 2 agent ${agent} ==="
     bash policy/Diffusion-Policy/train_cls_dp.sh \
         "${TASK}" "${LOAD_NUM}" "${agent}" "${N_AGENTS}" "${SEED}" "${GPU}" \
         | tee "${LOG_DIR}/stage2_agent${agent}.log"
-    ckpt="checkpoints/${TASK}_clsdp_Agent${agent}_${LOAD_NUM}/100.ckpt"
     if [ ! -f "${ckpt}" ]; then
         echo "MISSING ${ckpt}"
         exit 1

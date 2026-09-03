@@ -16,7 +16,9 @@ defaults:
 name: cls_dp_det
 
 # Distinct prefix so deterministic runs never collide with the reproduced *_clsdp_* runs.
-checkpoint_name: ${task_name}_clsdpdet_Agent${agent_id}_${data_num}
+# Only the latent axis is claimed here; the sampler and action_space groups own the other
+# tags, so `sampler=flow` on top of this yields clsdpdetfm without any further wiring.
+latent_tag: det
 
 policy:
   prior_net:

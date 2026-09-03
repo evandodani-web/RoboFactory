@@ -1,0 +1,10 @@
+# @package _global_
+#
+# The head denoises the raw normalized joint chunk, (horizon, 8). This is what every study
+# so far has done and it is the default.
+
+space_tag: ""
+
+action_latent:
+  enabled: false
+  autoencoder: null

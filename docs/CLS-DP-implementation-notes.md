@@ -798,6 +798,23 @@ That is a different experiment and should only be run once the measurement shows
 `cls_stage1_det_probe.yaml` is Study DET plus the prior probe alone, for answering the
 diagnostic question without also factorizing.
 
+### Study FM — flow-matching Stage 2 action expert (built, not yet trained)
+
+Same contextualizer and training set as Study B, but replaces the Stage 2 DDPM sampler
+with a rectified-flow / conditional-OT sampler (Euler integration in ~4 steps).
+Stage 2 still outputs the same (executed) 6-step action slice, so it is a drop-in
+replacement for eval.
+
+| Knob | Value |
+|---|---|
+| Stage 1 | reuses Study B `_ctx_` checkpoints |
+| Stage 2 head | `sampler=flow` (transport: `RectifiedFlowTransport`) |
+| Action space | raw joint chunk first |
+| Temporal-consistency | default off (`temporal_consistency_weight=0.0`) |
+| Checkpoints | `checkpoints/LiftBarrier-rf_{ctx,clsdpfm}_Agent{0,1}_150/` |
+| Pipeline | `policy/Diffusion-Policy/train_study_fm.sh` |
+| Eval | `policy/Diffusion-Policy/eval_cls_sweep.sh ... clsdpfm` (optionally sweep steps) |
+
 ### Study B — ThreeRobotsStackCube (in progress)
 
 Same recipe, new task. Paper Table II is **20%** on this 3-agent stack. Official HuggingFace
