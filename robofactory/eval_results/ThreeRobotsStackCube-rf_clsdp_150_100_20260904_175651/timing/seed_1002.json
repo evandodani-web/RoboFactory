@@ -1,0 +1,35 @@
+{
+  "env_id": "ThreeRobotsStackCube-rf",
+  "seed": 1002,
+  "ckpt_prefix": "clsdp",
+  "checkpoint_num": 100,
+  "num_inference_steps": 100,
+  "solver": "ddpm",
+  "success": false,
+  "policy_ms_total": 11684280.6,
+  "episode_ms_total": 15624247.0,
+  "policy_fraction_of_episode": 0.7478,
+  "per_agent": [
+    {
+      "policy_calls": 800,
+      "denoiser_calls": 80000,
+      "ms_per_action": 6856.835,
+      "denoiser_calls_per_action": 100.0,
+      "total_ms": 5485467.9
+    },
+    {
+      "policy_calls": 800,
+      "denoiser_calls": 80000,
+      "ms_per_action": 4091.157,
+      "denoiser_calls_per_action": 100.0,
+      "total_ms": 3272925.8
+    },
+    {
+      "policy_calls": 800,
+      "denoiser_calls": 80000,
+      "ms_per_action": 3657.359,
+      "denoiser_calls_per_action": 100.0,
+      "total_ms": 2925886.9
+    }
+  ]
+}
