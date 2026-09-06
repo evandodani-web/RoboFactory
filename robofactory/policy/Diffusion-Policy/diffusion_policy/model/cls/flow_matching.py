@@ -36,7 +36,7 @@ The reference implementation is therefore used as a test oracle, not as a depend
 import torch
 
 SIGMA_DISTRIBUTIONS = ("uniform", "logit_normal", "beta")
-SOLVERS = ("euler", "midpoint")
+SOLVERS = ("euler", "midpoint", "heun")
 
 
 class RectifiedFlowTransport:
@@ -54,6 +54,7 @@ class RectifiedFlowTransport:
         shift: float = 1.0,
         timestep_scale: float = 1000.0,
         solver: str = "euler",
+        sigma_min: float = 1e-4,
     ):
         if sigma_dist not in SIGMA_DISTRIBUTIONS:
             raise ValueError(
@@ -65,6 +66,8 @@ class RectifiedFlowTransport:
             raise ValueError(f"shift must be positive, got {shift}")
         if timestep_scale <= 0:
             raise ValueError(f"timestep_scale must be positive, got {timestep_scale}")
+        if not 0.0 <= sigma_min < 1.0:
+            raise ValueError(f"sigma_min must be in [0, 1), got {sigma_min}")
         if sigma_dist == "beta" and sigma_dist_scale <= 0:
             raise ValueError(
                 f"beta needs a positive sigma_dist_scale, got {sigma_dist_scale}"
@@ -76,6 +79,7 @@ class RectifiedFlowTransport:
         self.shift = shift
         self.timestep_scale = timestep_scale
         self.solver = solver
+        self.sigma_min = sigma_min
 
     # ------------------------------------------------------------------ sigma
 
@@ -113,7 +117,7 @@ class RectifiedFlowTransport:
             )
             sigma = uniform.pow(1.0 / self.sigma_dist_scale)
 
-        return self.apply_shift(sigma)
+        return self.apply_shift(sigma).clamp(min=self.sigma_min, max=1.0)
 
     def sigma_schedule(self, num_steps, device, dtype=torch.float32):
         """Descending sigmas for sampling, shape (num_steps + 1,), ending exactly at 0.
@@ -204,7 +208,7 @@ class RectifiedFlowTransport:
             velocity = model_fn(x, self.to_model_timestep(ones * sigma))
             if self.solver == "euler":
                 x = x + d_sigma * velocity
-            else:
+            elif self.solver == "midpoint":
                 # Midpoint: one extra model call buys second-order accuracy, which at very
                 # low step counts can beat spending the same calls on more Euler steps.
                 sigma_mid = sigma + 0.5 * d_sigma
@@ -213,5 +217,17 @@ class RectifiedFlowTransport:
                     x_mid, self.to_model_timestep(ones * sigma_mid)
                 )
                 x = x + d_sigma * velocity_mid
+            else:
+                # Heun / improved Euler: the 2-NFE method used by EDM and k-diffusion.
+                # Skip the correcting eval on the last step (sigma_next = 0); that step
+                # is already tiny (1/timestep_scale -> 0) and t=0 is not a training point.
+                x_euler = x + d_sigma * velocity
+                if i + 1 < num_steps:
+                    velocity_next = model_fn(
+                        x_euler, self.to_model_timestep(ones * sigma_next)
+                    )
+                    x = x + d_sigma * 0.5 * (velocity + velocity_next)
+                else:
+                    x = x_euler
 
         return x

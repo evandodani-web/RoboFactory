@@ -60,6 +60,7 @@ class CLSFlowMatchingUnetImagePolicy(CLSDiffusionUnetImagePolicy):
         tc_space: str = "velocity",
         action_autoencoder: Optional[nn.Module] = None,
         action_ae_ckpt: Optional[str] = None,
+        sigma_min: float = 1e-4,
         **kwargs,
     ):
         if num_inference_steps is None:
@@ -82,6 +83,7 @@ class CLSFlowMatchingUnetImagePolicy(CLSDiffusionUnetImagePolicy):
             shift=shift,
             timestep_scale=timestep_scale,
             solver=solver,
+            sigma_min=sigma_min,
         )
         self.temporal_consistency_weight = temporal_consistency_weight
         self.tc_space = tc_space
@@ -248,18 +250,22 @@ class CLSFlowMatchingUnetImagePolicy(CLSDiffusionUnetImagePolicy):
 
         tc_loss = None
         if self.temporal_consistency_weight > 0:
-            if self.tc_space == "velocity":
+            if self.tc_space == "velocity" and not self.uses_latent_action_space:
                 # Same space as the main loss, so both terms carry the same sigma^2
                 # relation to clean-action error and the weight needs no schedule.
                 tc_loss = F.mse_loss(
                     horizon_delta(velocity_pred), horizon_delta(velocity_target)
                 )
             else:
-                # Equivalent up to a bounded sigma^2 factor, which is the whole reason
-                # this is tractable here: the DDPM analogue is (1-alphabar)/alphabar,
-                # which is unbounded as alphabar -> 0.
+                # Joint-space smoothness. Used for tc_space=clean, and always when the
+                # flow runs in a learned action latent: adjacent latent tokens are not
+                # joint velocity. After a nonlinear decode the sigma^2 identity no
+                # longer holds, which is why the raw-space default stays `velocity`.
                 x1_pred = self.transport.implied_x1(x_sigma, sigma, velocity_pred)
-                tc_loss = F.mse_loss(horizon_delta(x1_pred), horizon_delta(x1))
+                pred_actions = self._decode_actions(x1_pred)
+                tc_loss = F.mse_loss(
+                    horizon_delta(pred_actions), horizon_delta(nactions)
+                )
             loss = loss + self.temporal_consistency_weight * tc_loss
 
         self.last_loss_components = {

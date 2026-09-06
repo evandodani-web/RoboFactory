@@ -176,6 +176,14 @@ def main():
     ).abs().max().item()
     print(f"       once trained, changing z moves the output by {delta:.4f}")
     check("z influences the output", delta > 0)
+    check("down_factor is 4 for [256, 512, 1024]", unet.down_factor == 4)
+
+    # Horizon 25 is not a multiple of 4; the U-Net pads internally and crops back.
+    sample25 = torch.randn(2, 25, STATE_DIM)
+    out25 = unet(sample25, timesteps, global_cond=global_cond, cond_latent=z_a)
+    check("T=25 output matches input length", tuple(out25.shape) == (2, 25, STATE_DIM))
+    out8 = unet(sample, timesteps, global_cond=global_cond, cond_latent=z_a)
+    check("T=8 (already aligned) keeps shape", tuple(out8.shape) == (2, 8, STATE_DIM))
 
     print("\n[6] Deterministic variant")
     det_prior = PriorNet(
@@ -321,6 +329,40 @@ def main():
     print(f"       with stop-grad cleared: {len(attached)}")
     check("clearing stop-grad reaches the prior", len(attached) > 0)
     ctx.prior_probe_stop_grad = True
+
+    # Combined backward with stop-grad must not change CVAE grads vs a CVAE-only
+    # backward: that is what makes the probe a measurement rather than a loss.
+    orig_probe = ctx._probe_outputs
+    ctx._probe_outputs = lambda *args, **kwargs: (None, {})
+    ctx.zero_grad()
+    cvae_only, _ = ctx.compute_loss(batch, beta=0.1)
+    cvae_only.backward()
+    grads_cvae = {
+        n: p.grad.detach().clone()
+        for n, p in ctx.named_parameters()
+        if p.grad is not None
+    }
+    ctx._probe_outputs = orig_probe
+
+    ctx.zero_grad()
+    combined, _ = ctx.compute_loss(batch, beta=0.1)
+    combined.backward()
+    probe_ids = {id(p) for p in ctx.probe_parameters()}
+    mismatched = 0
+    compared = 0
+    for n, p in ctx.named_parameters():
+        if id(p) in probe_ids:
+            continue
+        compared += 1
+        g_cvae = grads_cvae.get(n)
+        if g_cvae is None and p.grad is None:
+            continue
+        if g_cvae is None or p.grad is None or not torch.allclose(
+            p.grad, g_cvae, atol=1e-6, rtol=1e-5
+        ):
+            mismatched += 1
+    print(f"       CVAE tensors compared (combined vs CVAE-only backward): {compared}")
+    check("stop-grad probe does not change CVAE gradients", mismatched == 0 and compared > 0)
 
     print("\n[9] Flow-matching transport + sampler correctness")
     from diffusion_policy.model.cls.flow_matching import RectifiedFlowTransport
@@ -513,6 +555,27 @@ def main():
         "clean delta mse ~= sigma^2 * velocity delta mse",
         abs(ratio - sigma_i.item() ** 2) < 1e-3,
     )
+
+    # --- training sigma floor
+    gen = torch.Generator().manual_seed(0)
+    sampled = transport.sample_sigma(4096, device="cpu", generator=gen)
+    check("training sigma respects sigma_min",
+          float(sampled.min()) >= transport.sigma_min - 1e-7)
+    check("training sigma stays in (0, 1]",
+          float(sampled.max()) <= 1.0 + 1e-7)
+
+    # --- Heun model-call count: 2 per step except the last (which is Euler)
+    heun = RectifiedFlowTransport(solver="heun", timestep_scale=1000.0)
+    heun_calls = {"n": 0}
+
+    def counting_fn(x, t_model):
+        heun_calls["n"] += 1
+        return torch.zeros_like(x)
+
+    heun.sample(
+        counting_fn, shape=(2, H, D), num_steps=4, device="cpu", dtype=torch.float32
+    )
+    check("Heun model calls == 2*steps - 1", heun_calls["n"] == 7)
 
     print("\nALL CLS-DP MODULE CHECKS PASSED\n")
 

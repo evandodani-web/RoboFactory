@@ -9,7 +9,8 @@ Related: [CLS-DP-replication-spec.md](CLS-DP-replication-spec.md) (paper extract
 [CLS-DP-improvements.md](CLS-DP-improvements.md) (ranked idea list; this is proposal 5),
 [CLS-DP-variant-factorized-grounded.md](CLS-DP-variant-factorized-grounded.md) (Study FG).
 
-Status: **design only, nothing implemented.**
+Status: **implemented, not yet trained.** `sampler=flow` selects the FM policy. Temporal
+consistency defaults off; latent action space is a separate `action_space=latent` group.
 
 ---
 
@@ -86,12 +87,13 @@ variables:
 latent_tag: ""      # cls_dp_det.yaml sets "det", cls_dp_fg.yaml sets "fg"
 head_tag: ""        # sampler/flow.yaml sets "fm"
 space_tag: ""       # action_space/latent.yaml sets "la"
-checkpoint_name: ${task_name}_clsdp${latent_tag}${head_tag}${space_tag}_Agent${agent_id}_${data_num}
+horizon_tag: ""     # horizon/h25.yaml sets "h25"
+checkpoint_name: ${task_name}_clsdp${latent_tag}${head_tag}${space_tag}${horizon_tag}_Agent${agent_id}_${data_num}
 ```
 
 With all tags empty this resolves to `LiftBarrier-rf_clsdp_Agent0_150` — **byte-identical to
 today**, so Study B, DET and FG checkpoint paths are unchanged. New combinations name themselves:
-`clsdpfm` (Study B + flow), `clsdpdetfm` (DET + flow), `clsdpfmla` (flow in latent action space).
+`clsdpfm` (Study B + flow), `clsdpdetfm` (DET + flow), `clsdpfgfmh25` (FG + flow + horizon 25).
 
 `eval_cls_sweep.sh` already takes an arbitrary prefix string as its 9th argument, so evaluation
 needs no changes at all. The existing `verify_cls_pipeline.py` assertions (`"clsdpdet" in
@@ -383,13 +385,14 @@ Following the repo convention of two CPU-only suites.
 |---|---|---|
 | `sampler` (group) | `ddpm` | `flow` selects the FM policy and config block |
 | `action_space` (group) | `raw` | `latent` routes the flow through the chunk autoencoder |
-| `num_inference_steps` | 4 | Euler/midpoint steps; sweepable at eval |
-| `solver` | `euler` | or `midpoint` (2nd order, 2 calls per step) |
+| `num_inference_steps` | 4 | Solver steps; sweepable at eval |
+| `solver` | `euler` | or `midpoint` / `heun` (2nd order) |
 | `sigma_dist` | `uniform` | or `logit_normal`, `beta` |
+| `sigma_min` | `1e-4` | Training-only floor; inference still ends at 0 |
 | `shift` | 1.0 | SD3-style time shift; 1.0 = off |
 | `timestep_scale` | 1000.0 | Scales sigma before `SinusoidalPosEmb`. Do not lower |
 | `temporal_consistency_weight` | 0.0 | Off. Section 4 |
-| `tc_space` | `velocity` | or `clean` |
+| `tc_space` | `velocity` | or `clean`. Latent action space always scores decoded joints |
 
 ---
 

@@ -1,9 +1,9 @@
 # CLS-DP Stage 1, DETERMINISTIC variant.
 #
-# Inherits everything from cls_stage1.yaml and overrides only the stochasticity, so this
-# cannot drift from the reproduced baseline. The encoders emit z directly instead of
-# (mean, log-scale), nothing is sampled, and the KL is replaced by its unit-variance
-# limit 0.5*||z_E||^2 (see diffusion_policy/policy/contextualizer.py::_residual_l2).
+# Inherits everything from cls_stage1.yaml and overrides the stochasticity plus the
+# prior-only probe (on by default; `enable_prior_probe=false` turns it off). The
+# encoders emit z directly instead of (mean, log-scale), nothing is sampled, and the
+# KL is replaced by its unit-variance limit 0.5*||z_E||^2.
 #
 # beta keeps its meaning and its warm-up schedule: at sigma=1 the KL *is* that L2 term,
 # so the two variants weight the alignment identically.
@@ -16,7 +16,13 @@ defaults:
 name: cls_stage1_det
 
 # Distinct prefix so deterministic runs never collide with the reproduced *_ctx_* runs.
-checkpoint_name: ${task_name}_ctxdet_Agent${agent_id}_${data_num}
+# Horizon group appends its tag, so `horizon=h25` yields ctxdeth25 without a new file.
+latent_tag: det
+
+# Prior-only readout on by default. The CVAE is isolated from it (stop-grad + separate
+# grad clip), so this is a diagnostic, not a change to the DET objective. Flip with
+# `enable_prior_probe=false`.
+enable_prior_probe: true
 
 contextualizer:
   deterministic: true

@@ -25,7 +25,10 @@ Three variants live here, selected by flags:
                                teammate half receives the privileged residual
 
 Independently of those, two optional probe decoders can be attached. They are pure
-measurement by default and are described in `_probe_outputs`.
+measurement by default (see `_probe_outputs`). Stage 1 configs gate them with
+`enable_prior_probe` / `enable_leak_probe`; the workspace instantiates the matching
+decoder spec only when the flag is on. Stop-grad probes are clipped in their own
+parameter group so they cannot change CVAE training via the global grad-norm clip.
 """
 
 import torch
@@ -74,6 +77,8 @@ def _trajectory_mse(error):
 
 
 class Contextualizer(ModuleAttrMixin):
+    PROBE_MODULE_NAMES = ("prior_probe", "leak_probe")
+
     def __init__(
         self,
         prior_net: nn.Module,
@@ -139,6 +144,25 @@ class Contextualizer(ModuleAttrMixin):
             raise ValueError("the non-factorized variant requires ma_decoder")
 
         self.normalizer = LinearNormalizer()
+
+    def probe_parameters(self):
+        """Parameters of attached readout probes, if any."""
+        for name in self.PROBE_MODULE_NAMES:
+            module = getattr(self, name, None)
+            if module is not None:
+                yield from module.parameters()
+
+    def cvae_parameters(self):
+        """Every parameter that is not a probe readout.
+
+        Used so the Stage 1 grad clip cannot let a randomly-initialized probe shrink
+        the contextualizer's step. Stop-grad already keeps probe *gradients* out of
+        the prior; this keeps probe *grad norms* out of the clip as well.
+        """
+        probe_ids = {id(p) for p in self.probe_parameters()}
+        for param in self.parameters():
+            if id(param) not in probe_ids:
+                yield param
 
     def set_normalizer(self, normalizer: LinearNormalizer):
         self.normalizer.load_state_dict(normalizer.state_dict())
@@ -212,11 +236,12 @@ class Contextualizer(ModuleAttrMixin):
                 )
             )
 
-        loss = beta * alignment + recon_loss
+        cvae_loss = beta * alignment + recon_loss
 
         probe_loss, probe_metrics = self._probe_outputs(
             own_state, team_target, z_self, z_team
         )
+        loss = cvae_loss
         if probe_loss is not None:
             loss = loss + self.probe_weight * probe_loss
 
@@ -229,10 +254,13 @@ class Contextualizer(ModuleAttrMixin):
             metrics.update(self._probe_comparisons(metrics))
             # Key stays `ctx_kl` across all variants so the logging and gate code is
             # shared; in the deterministic variant it holds the L2 alignment term.
-            metrics["ctx_loss"] = loss.item()
+            # `ctx_loss` is the CVAE objective only, so B vs DET-with-probe logs compare.
+            metrics["ctx_loss"] = cvae_loss.item()
             metrics["ctx_kl"] = alignment.item()
             metrics["ctx_recon"] = recon_loss.item()
             metrics["ctx_beta"] = beta
+            if probe_loss is not None:
+                metrics["ctx_probe_loss"] = probe_loss.item()
 
         return loss, metrics
 

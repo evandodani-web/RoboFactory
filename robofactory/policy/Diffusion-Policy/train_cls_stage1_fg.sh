@@ -7,9 +7,11 @@
 # artifacts are untouched.
 #
 # Usage:
-#   bash policy/Diffusion-Policy/train_cls_stage1_fg.sh ${task_name} ${load_num} ${agent_id} ${n_agents} ${seed} ${gpu_id}
+#   bash policy/Diffusion-Policy/train_cls_stage1_fg.sh ${task_name} ${load_num} ${agent_id} ${n_agents} ${seed} ${gpu_id} [hydra overrides...]
 # Example:
 #   bash policy/Diffusion-Policy/train_cls_stage1_fg.sh LiftBarrier-rf 150 0 2 42 0
+#   bash policy/Diffusion-Policy/train_cls_stage1_fg.sh LiftBarrier-rf 150 0 2 42 0 horizon=h25
+# CONFIG_NAME selects a convenience yaml (default cls_stage1_fg).
 set -euo pipefail
 
 task_name=${1}
@@ -20,7 +22,7 @@ seed=${5:-42}
 gpu_id=${6:-0}
 
 DEBUG=False
-config_name=cls_stage1_fg
+config_name=${CONFIG_NAME:-cls_stage1_fg}
 exp_name=${task_name}-cls-stage1-fg
 
 if [ "${n_agents}" -lt 2 ]; then
@@ -50,4 +52,5 @@ python ./policy/Diffusion-Policy/train.py --config-name=${config_name}.yaml \
     training.debug=$DEBUG \
     training.seed=${seed} \
     training.device="cuda:0" \
-    exp_name=${exp_name}
+    exp_name=${exp_name} \
+    "${@:7}"

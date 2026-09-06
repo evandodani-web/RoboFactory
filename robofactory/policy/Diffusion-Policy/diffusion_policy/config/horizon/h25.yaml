@@ -1,0 +1,18 @@
+# @package _global_
+#
+# Long-horizon variant: 25-step action chunk and 25-step privileged future.
+# The U-Net pads internally to a multiple of 4, so 25 does not need a new backbone.
+#
+# Executed steps default to the whole aligned slice (23 = 25 - 2). Receding horizon
+# (predict 25, execute 6) is `n_exec_steps=6` on the CLI.
+#
+# Select with `horizon=h25`. Composes with any latent / sampler / action_space:
+#   python train.py --config-name=cls_stage1_fg.yaml horizon=h25
+#   python train.py --config-name=cls_dp_fg.yaml sampler=flow horizon=h25
+
+horizon_tag: h25
+
+horizon: 25
+n_action_steps: ${horizon}
+n_future_states: ${horizon}
+n_exec_steps: ${eval:'${horizon} - ${n_obs_steps} + 1'}

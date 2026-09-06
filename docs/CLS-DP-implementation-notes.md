@@ -92,7 +92,8 @@ paper's literal `a_{t:t+H-1}`.
 Why: the `Ours w/o CLS` ablation is supposed to be "this policy minus `z`". If I change the action
 indexing, the ablation is no longer the repo's DP and the headline 38-vs-9 comparison stops being
 apples-to-apples. Keeping the convention also means the trained policy drops straight into the
-existing eval loop, which hardcodes `for i in range(6)`.
+existing eval loop, which consumes however many steps `predict_action` returns (6 at
+horizon 8; `horizon - n_obs_steps + 1` otherwise).
 
 The privileged target **does** follow the paper literally: `s^{1:N}_{t+1:t+H}`, i.e. 8 steps
 starting one step after `t`.
@@ -742,15 +743,17 @@ reconstruction.
 |---|---|
 | Latent | deterministic; encoders emit `z` directly, no scale head is constructed |
 | Sampling | none, anywhere. `latent_sample` cannot reintroduce it |
+| Probe | `enable_prior_probe: true` (measurement; `enable_prior_probe=false` to disable) |
 | Configs | `cls_stage1_det.yaml`, `cls_dp_det.yaml` (inherit their baselines via Hydra defaults) |
 | Checkpoints | `checkpoints/LiftBarrier-rf_{ctxdet,clsdpdet}_Agent{0,1}_150/` |
 | Pipeline | `policy/Diffusion-Policy/train_study_det.sh` |
 | Eval | `eval_cls_sweep.sh ... clsdpdet` (9th arg selects the checkpoint family) |
 
-Config inheritance was verified by composition: the resolved configs differ from their Study B
-parents **only** in the deterministic flags, `latent_sample`, the run name and the checkpoint
-prefix. Adam, `beta` 0.1 / 0.4 warm-up, 100 epochs, K=100, horizon 8, `d_model` 768 and latent
-256 are all inherited, so any delta is attributable to the stochasticity.
+Config inheritance was verified by composition: the resolved DET configs differ from
+Study B in the deterministic flags, `enable_prior_probe: true`, the run name and the
+checkpoint prefix. The probe is stop-grad and clipped in its own parameter group, so
+it does not change the DET objective. Adam, `beta` 0.1 / 0.4 warm-up, 100 epochs,
+K=100, horizon 8, `d_model` 768 and latent 256 are all inherited.
 
 Reuses Study B's 14x14 SigLIP cache — the frozen encoders are untouched. The pipeline script
 asserts the cache has 197 tokens rather than silently training on a stale 4x4 one.
@@ -795,8 +798,38 @@ lacks the information" with "the decoder has never seen this input."
 Clearing `prior_probe_stop_grad` converts the probe into a prior-only reconstruction *loss*.
 That is a different experiment and should only be run once the measurement shows a gap.
 
-`cls_stage1_det_probe.yaml` is Study DET plus the prior probe alone, for answering the
-diagnostic question without also factorizing.
+The same probe is flag-gated on every Stage 1 config (`enable_prior_probe` /
+`enable_leak_probe`). Defaults: **off** on Study B, **on** on DET and FG. The workspace
+clips probe parameters separately from the CVAE so a stop-grad probe cannot change
+contextualizer training via the global grad-norm clip. `cls_stage1_det_probe.yaml` is
+kept only as a `*_ctxdetprobe_*` checkpoint-prefix alias.
+
+The axes compose independently via Hydra groups (`sampler`, `action_space`, `horizon`).
+`horizon=h8` is the default and keeps the checkpoint names above unchanged.
+`horizon=h25` appends `h25` and must train its own Stage 1 (`time_embed` is length 25).
+
+### Study FG-FM-H25 — factorized + flow + 25-step chunks (built, not yet trained)
+
+DET + FG split + flow-matching Stage 2 + 25-step action / privileged-future windows.
+Nothing here is a new objective: it is the three existing axes composed together.
+
+| Knob | Value |
+|---|---|
+| Latent | DET + FG split (`z_self` 128 / `z_team` 128) |
+| Stage 2 head | `sampler=flow` (4 Euler steps, raw action space) |
+| Horizon | `horizon=h25` → `horizon=n_action_steps=n_future_states=25` |
+| Executed steps | 23 (`25 - n_obs_steps + 1`); receding-horizon ablation is `n_exec_steps=6` |
+| Configs | `cls_stage1_fg.yaml horizon=h25`, `cls_dp_fg.yaml sampler=flow horizon=h25` |
+| Convenience | `cls_stage1_fg_h25.yaml`, `cls_dp_fg_fm_h25.yaml` |
+| Checkpoints | `checkpoints/LiftBarrier-rf_{ctxfgh25,clsdpfgfmh25}_Agent{0,1}_150/` |
+| Pipeline | `policy/Diffusion-Policy/train_study_fgfm_h25.sh` |
+| Eval | `eval_cls_sweep.sh ... 10 65 clsdpfgfmh25` (`max_steps=65` matches Study B's env-step budget) |
+
+The U-Net pads 25 → 28 internally (downsampling factor 4) and crops back. Stage 1 FG
+checkpoints at h8 are **not** reusable: `time_embed` is `n_future_states` long.
+Eval uses `max_steps=65` so the env-step budget matches Study B (250 × 6).
+
+Drop any axis without a new file, e.g. DDPM at h25 is `cls_dp_fg.yaml horizon=h25`.
 
 ### Study FM — flow-matching Stage 2 action expert (built, not yet trained)
 

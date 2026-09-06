@@ -302,21 +302,22 @@ Almost all of it lives in
 |---|---|---|
 | `factorize` | `false` | Split the latent, use the two decoders |
 | `self_dim` | 128 | Width of `z_self`; `team_dim` is the remainder |
-| `prior_probe` | `null` | Attach the prior-only read-out |
-| `leak_probe` | `null` | Attach the `z_self` leak read-out |
+| `enable_prior_probe` | `false` (B) / `true` (DET, FG) | Attach the prior-only read-out |
+| `enable_leak_probe` | `false` (B, DET) / `true` (FG) | Attach the `z_self` leak read-out |
 | `prior_probe_stop_grad` | `true` | `true` = measurement, `false` = intervention |
 | `leak_probe_stop_grad` | `true` | Should stay `true` |
 | `probe_weight` | 1.0 | Only matters when a stop-grad is cleared |
 
+CLI: `enable_prior_probe=true` or `false` is enough; the decoder spec lives at the top
+level of `cls_stage1.yaml` and is not instantiated when the flag is off. Stop-grad probes
+are clipped in their own parameter group so they cannot change CVAE training.
+
 ### Configs
 
 Chained inheritance, `cls_stage1` to `cls_stage1_det` to `cls_stage1_fg`, so the variant
-cannot drift from the reproduced baseline. Verified by composition: `cls_stage1_fg` differs
-from `cls_stage1_det` only in the factorization keys, the new modules and the checkpoint
-name; `cls_dp_fg` differs from `cls_dp_det` only in names.
-
-`cls_stage1_det_probe.yaml` is Study DET plus the prior probe alone — the cheapest way to
-answer section 4's question without changing anything else.
+cannot drift from the reproduced baseline. DET turns `enable_prior_probe` on; FG also
+turns `enable_leak_probe` on and overrides each probe's `latent_dim` to the matching
+slice. `cls_stage1_det_probe.yaml` is only a `*_ctxdetprobe_*` checkpoint-prefix alias.
 
 ### Running
 
@@ -335,8 +336,7 @@ the split held). Existing keys are unchanged so the gate and epoch-averaging sti
 
 ### Verification
 
-`verify_cls_dp.py` sections 7-8 and `verify_cls_pipeline.py` sections 8-9. 101 pipeline
-checks total. The one worth knowing about: section 9 fits two identical probes, one on a
-latent that literally encodes the target and one on noise, and requires the informative one
-to win by more than 2x. Without it `ctx_leak_ratio` could look healthy simply because every
-probe fails.
+`verify_cls_dp.py` sections 7-8 and `verify_cls_pipeline.py` sections 8-9. The one worth
+knowing about: section 9 fits two identical probes, one on a latent that literally encodes
+the target and one on noise, and requires the informative one to win by more than 2x.
+Without it `ctx_leak_ratio` could look healthy simply because every probe fails.

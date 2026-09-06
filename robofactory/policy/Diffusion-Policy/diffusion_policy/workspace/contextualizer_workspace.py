@@ -31,6 +31,23 @@ from diffusion_policy.workspace.robotworkspace import create_dataloader
 OmegaConf.register_new_resolver("eval", eval, replace=True)
 
 
+def _instantiate_if_enabled(cfg, enabled_key, spec_key):
+    """Build a decoder spec only when the matching top-level flag is true.
+
+    `enable_prior_probe=true` / `false` on the CLI is enough to turn the diagnostic
+    on or off; the decoder architecture lives in the `prior_probe` / `leak_probe`
+    specs and is not instantiated when the flag is off.
+    """
+    if not bool(OmegaConf.select(cfg, enabled_key, default=False)):
+        return None
+    spec = OmegaConf.select(cfg, spec_key)
+    if spec is None:
+        raise ValueError(
+            f"{enabled_key}=true requires a '{spec_key}' decoder spec in the config"
+        )
+    return hydra.utils.instantiate(spec)
+
+
 class ContextualizerWorkspace(BaseWorkspace):
     include_keys = ["global_step", "epoch"]
 
@@ -42,7 +59,15 @@ class ContextualizerWorkspace(BaseWorkspace):
         np.random.seed(seed)
         random.seed(seed)
 
-        self.model: Contextualizer = hydra.utils.instantiate(cfg.contextualizer)
+        self.model: Contextualizer = hydra.utils.instantiate(
+            cfg.contextualizer,
+            prior_probe=_instantiate_if_enabled(
+                cfg, "enable_prior_probe", "prior_probe"
+            ),
+            leak_probe=_instantiate_if_enabled(
+                cfg, "enable_leak_probe", "leak_probe"
+            ),
+        )
         self.optimizer = hydra.utils.instantiate(
             cfg.optimizer, params=self.model.parameters()
         )
@@ -130,10 +155,18 @@ class ContextualizerWorkspace(BaseWorkspace):
 
                         if self.global_step % cfg.training.gradient_accumulate_every == 0:
                             if cfg.training.grad_clip_norm is not None:
+                                # Clip the CVAE and the probes separately. A joint clip
+                                # would let a randomly-initialized readout shrink the
+                                # contextualizer's step even with stop-grad on z.
+                                max_norm = cfg.training.grad_clip_norm
                                 torch.nn.utils.clip_grad_norm_(
-                                    self.model.parameters(),
-                                    cfg.training.grad_clip_norm,
+                                    list(self.model.cvae_parameters()), max_norm
                                 )
+                                probe_params = list(self.model.probe_parameters())
+                                if probe_params:
+                                    torch.nn.utils.clip_grad_norm_(
+                                        probe_params, max_norm
+                                    )
                             self.optimizer.step()
                             self.optimizer.zero_grad()
                             lr_scheduler.step()

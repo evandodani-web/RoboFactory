@@ -1,0 +1,12 @@
+# @package _global_
+#
+# Paper Table I: 8-step action chunk, 8-step privileged future, 6 executed steps.
+# Selected by default from cls_stage1.yaml and cls_dp.yaml, so `horizon=h8` is a no-op.
+
+horizon_tag: ""
+
+horizon: 8
+n_action_steps: ${horizon}
+n_future_states: ${horizon}
+# Execute the aligned future slice a_t .. a_{t+H-n_obs}. With n_obs_steps=3 this is 6.
+n_exec_steps: ${eval:'${horizon} - ${n_obs_steps} + 1'}

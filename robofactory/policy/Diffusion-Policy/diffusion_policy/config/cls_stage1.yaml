@@ -3,6 +3,7 @@
 defaults:
   - _self_
   - task: cls_task
+  - horizon: h8
 
 name: cls_stage1
 _target_: diffusion_policy.workspace.contextualizer_workspace.ContextualizerWorkspace
@@ -16,12 +17,45 @@ exp_name: "default"
 # Stage 1 never touches images or actions, only cached SigLIP features and states.
 stage: 1
 
-checkpoint_name: ${task_name}_ctx_Agent${agent_id}_${data_num}
+checkpoint_name: ${task_name}_ctx${latent_tag}${horizon_tag}_Agent${agent_id}_${data_num}
 
-# Paper Table I
-horizon: 8
+# Prior-only readout. Off for Study B so the reproduced 61% recipe is unchanged.
+# Turn on from the CLI with `enable_prior_probe=true`; DET and FG turn it on by default.
+# `enable_leak_probe` is the FG-only "did z_self leak teammate info?" probe.
+enable_prior_probe: false
+enable_leak_probe: false
+n_others: ${eval:'${n_agents} - 1'}
+
+# Decoder specs. Instantiated only when the matching enable_* flag is true, so flipping
+# the flag never requires pasting a module block. FG overrides latent_dim to the slice
+# width; B/DET read the full 256-d prior.
+prior_probe:
+  _target_: diffusion_policy.model.cls.ma_kinematics.MAKinematicsDecoder
+  state_dim: ${state_dim}
+  n_agents: ${n_others}
+  n_future_states: ${n_future_states}
+  latent_dim: ${latent_dim}
+  d_model: 256
+  n_layers: 2
+  n_heads: 4
+  dim_feedforward: 512
+  dropout: 0.0
+
+leak_probe:
+  _target_: diffusion_policy.model.cls.ma_kinematics.MAKinematicsDecoder
+  state_dim: ${state_dim}
+  n_agents: ${n_others}
+  n_future_states: ${n_future_states}
+  latent_dim: ${latent_dim}
+  d_model: 256
+  n_layers: 2
+  n_heads: 4
+  dim_feedforward: 512
+  dropout: 0.0
+
+# Paper Table I. Horizon / n_future_states come from the `horizon` group (h8 default).
 n_obs_steps: 3
-n_future_states: 8
+latent_tag: ""
 latent_dim: 256
 feature_dim: 768
 state_dim: 8
@@ -31,6 +65,10 @@ contextualizer:
   agent_id: ${agent_id}
   n_agents: ${n_agents}
   latent_dim: ${latent_dim}
+  # True = measurement (no gradient into the prior). False = prior-only recon loss.
+  prior_probe_stop_grad: true
+  leak_probe_stop_grad: true
+  probe_weight: 1.0
 
   prior_net:
     _target_: diffusion_policy.model.cls.prior_net.PriorNet

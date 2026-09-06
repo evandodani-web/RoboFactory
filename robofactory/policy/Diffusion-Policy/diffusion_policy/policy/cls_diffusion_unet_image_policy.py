@@ -55,6 +55,7 @@ class CLSDiffusionUnetImagePolicy(BaseImagePolicy):
         horizon,
         n_action_steps,
         n_obs_steps,
+        n_exec_steps=None,
         latent_dim=256,
         latent_sample=True,
         num_inference_steps=None,
@@ -123,6 +124,10 @@ class CLSDiffusionUnetImagePolicy(BaseImagePolicy):
         self.action_dim = action_dim
         self.n_action_steps = n_action_steps
         self.n_obs_steps = n_obs_steps
+        # How many of the predicted chunk to execute per cycle, starting at time t
+        # (window index n_obs_steps-1). None falls back to the legacy
+        # n_action_steps slice, which with horizon=8 yields 6 executed steps.
+        self.n_exec_steps = n_exec_steps
         self.obs_as_global_cond = obs_as_global_cond
         self.latent_dim = latent_dim
         self.latent_sample = latent_sample
@@ -257,7 +262,10 @@ class CLSDiffusionUnetImagePolicy(BaseImagePolicy):
         )
 
         start = n_obs - 1
-        end = start + self.n_action_steps
+        n_exec = (
+            self.n_exec_steps if self.n_exec_steps is not None else self.n_action_steps
+        )
+        end = start + n_exec
         return {
             "action": action_pred[:, start:end],
             "action_pred": action_pred,

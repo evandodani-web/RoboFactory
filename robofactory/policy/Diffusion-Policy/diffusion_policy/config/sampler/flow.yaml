@@ -23,9 +23,14 @@ policy:
   # retraining via eval_multi_cls_dp.py --num-inference-steps.
   num_inference_steps: 4
 
-  # euler: 1 model call per step. midpoint: 2 calls, second-order, often better at equal
-  # wall-clock when the step count is very low.
+  # euler: 1 model call per step. midpoint: 2 calls, second-order.
+  # heun: improved Euler (EDM / k-diffusion); 2 calls except the last step.
   solver: euler
+
+  # Exclude exact 0 during training (inference still terminates at 0). Matches the
+  # SD3/Flux/EDM practice of not asking the network to denoise a sample that is already
+  # on the data manifold.
+  sigma_min: 1.0e-4
 
   # How sigma is drawn during training. uniform adds no tuning axis, which keeps the first
   # run a clean DDPM-to-flow swap. logit_normal (SD3) concentrates on mid-sigma; beta (pi0)

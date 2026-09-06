@@ -6,9 +6,12 @@
 # in which Stage 1 checkpoint it pairs with and where it writes.
 #
 # Usage:
-#   bash policy/Diffusion-Policy/train_cls_dp_fg.sh ${task_name} ${load_num} ${agent_id} ${n_agents} ${seed} ${gpu_id} [${ctx_epoch}]
+#   bash policy/Diffusion-Policy/train_cls_dp_fg.sh ${task_name} ${load_num} ${agent_id} ${n_agents} ${seed} ${gpu_id} [${ctx_epoch}] [hydra overrides...]
 # Example:
 #   bash policy/Diffusion-Policy/train_cls_dp_fg.sh LiftBarrier-rf 150 0 2 42 0
+#   CTX_TAG=ctxfgh25 bash policy/Diffusion-Policy/train_cls_dp_fg.sh LiftBarrier-rf 150 0 2 42 0 100 sampler=flow horizon=h25
+# CONFIG_NAME selects a convenience yaml (default cls_dp_fg). CTX_TAG is the Stage 1
+# checkpoint family (default ctxfg); set it to ctxfgh25 when Stage 1 ran at horizon=h25.
 set -euo pipefail
 
 task_name=${1}
@@ -20,11 +23,12 @@ gpu_id=${6:-0}
 ctx_epoch=${7:-100}
 
 DEBUG=False
-config_name=cls_dp_fg
+config_name=${CONFIG_NAME:-cls_dp_fg}
 exp_name=${task_name}-cls-dp-fg
+ctx_tag=${CTX_TAG:-ctxfg}
 
 zarr_path="data/zarr_data/${task_name}_multi_${load_num}.zarr"
-ctx_ckpt="checkpoints/${task_name}_ctxfg_Agent${agent_id}_${load_num}/${ctx_epoch}.ckpt"
+ctx_ckpt="checkpoints/${task_name}_${ctx_tag}_Agent${agent_id}_${load_num}/${ctx_epoch}.ckpt"
 
 if [ ! -f "${ctx_ckpt}" ]; then
     echo -e "\033[31mmissing factorized contextualizer checkpoint ${ctx_ckpt}\033[0m"
@@ -49,4 +53,5 @@ python ./policy/Diffusion-Policy/train.py --config-name=${config_name}.yaml \
     training.debug=$DEBUG \
     training.seed=${seed} \
     training.device="cuda:0" \
-    exp_name=${exp_name}
+    exp_name=${exp_name} \
+    "${@:8}"

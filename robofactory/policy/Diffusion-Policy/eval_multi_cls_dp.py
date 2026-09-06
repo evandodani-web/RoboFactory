@@ -472,9 +472,17 @@ def main(args: Args):
 
         # Each agent acts on its own local observation only: no shared views, no state
         # exchange, no communication. Coordination comes entirely through z.
+        n_exec = None
         for agent_id in range(agent_num):
             action_list = cls_models[agent_id].get_action()
-            for i in range(6):
+            if n_exec is None:
+                n_exec = int(action_list.shape[0])
+            elif int(action_list.shape[0]) != n_exec:
+                raise RuntimeError(
+                    f"agent {agent_id} returned {action_list.shape[0]} executed steps, "
+                    f"expected {n_exec} to match agent 0"
+                )
+            for i in range(n_exec):
                 now_action = action_list[i]
                 raw_obs = env.get_obs()
                 if i == 0:
@@ -509,8 +517,10 @@ def main(args: Args):
                         np.hstack([position[j], gripper_state])
                     )
 
+        if n_exec is None:
+            raise RuntimeError("no agent returned an action chunk")
         start_idx = [0 for _ in range(agent_num)]
-        for i in range(6):
+        for i in range(n_exec):
             max_step = 0
             for agent_id in range(agent_num):
                 max_step = max(max_step, action_step_dict[f"panda-{agent_id}"][i])

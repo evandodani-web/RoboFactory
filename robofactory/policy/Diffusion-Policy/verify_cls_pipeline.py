@@ -400,6 +400,15 @@ def test_action_expert(ds2, contextualizer):
     check("executed action is 6 steps",
           tuple(out["action"].shape) == (BATCH, 6, STATE_DIM),
           str(tuple(out["action"].shape)))
+    policy.n_exec_steps = 4
+    with torch.no_grad():
+        out_short = policy.predict_action(obs_dict)
+    check("n_exec_steps shortens the executed slice",
+          tuple(out_short["action"].shape) == (BATCH, 4, STATE_DIM),
+          str(tuple(out_short["action"].shape)))
+    check("n_exec_steps does not change the predicted horizon",
+          tuple(out_short["action_pred"].shape) == (BATCH, HORIZON, STATE_DIM))
+    policy.n_exec_steps = None
     check("latent is returned", tuple(out["cls_latent"].shape) == (BATCH, LATENT_DIM))
     check("actions are finite", bool(torch.isfinite(out["action"]).all()))
 
@@ -507,6 +516,9 @@ def test_flow_action_expert(ds2, contextualizer):
 def load_cfg(name, zarr_path, overrides):
     """Compose through Hydra, so the defaults lists in the *_det configs are honoured."""
     from hydra import compose, initialize_config_dir
+    from omegaconf import OmegaConf as _OmegaConf
+
+    _OmegaConf.register_new_resolver("eval", eval, replace=True)
 
     cfg_dir = os.path.join(HERE, "diffusion_policy", "config")
     base = [
@@ -539,6 +551,8 @@ def test_workspaces(workdir, zarr_path):
     out1 = os.path.join(workdir, "out_stage1")
     cfg1 = load_cfg("cls_stage1.yaml", zarr_path, small_ctx)
     ws1 = ContextualizerWorkspace(cfg1, output_dir=out1)
+    check("Study B leaves the prior probe off",
+          cfg1.enable_prior_probe is False and ws1.model.prior_probe is None)
     cwd = os.getcwd()
     os.chdir(workdir)
     try:
@@ -640,6 +654,8 @@ DET_CTX_OVERRIDES = [
     "contextualizer.ma_encoder.n_heads=4", "contextualizer.ma_encoder.dim_feedforward=128",
     "contextualizer.ma_decoder.d_model=64", "contextualizer.ma_decoder.n_layers=1",
     "contextualizer.ma_decoder.n_heads=4", "contextualizer.ma_decoder.dim_feedforward=128",
+    "prior_probe.d_model=64", "prior_probe.n_layers=1",
+    "prior_probe.n_heads=4", "prior_probe.dim_feedforward=128",
     f"feature_dim={FEATURE_DIM}", f"latent_dim={LATENT_DIM}", "agent_id=0",
     f"dataloader.batch_size={BATCH}", f"val_dataloader.batch_size={BATCH}",
 ]
@@ -662,6 +678,17 @@ def test_deterministic_variant(workdir, zarr_path):
     check("no scale parameters were built",
           ws1.model.prior_net.to_log_sigma is None
           and ws1.model.ma_encoder.to_log_sigma is None)
+    check("DET attaches the prior probe by default", ws1.model.prior_probe is not None)
+    check("DET does not attach the leak probe", ws1.model.leak_probe is None)
+
+    cfg_off = load_cfg(
+        "cls_stage1_det", zarr_path, DET_CTX_OVERRIDES + ["enable_prior_probe=false"]
+    )
+    ws_off = ContextualizerWorkspace(
+        cfg_off, output_dir=os.path.join(workdir, "out_det1_off")
+    )
+    check("enable_prior_probe=false detaches the DET probe",
+          ws_off.model.prior_probe is None)
 
     os.chdir(workdir)
     try:
@@ -760,7 +787,9 @@ FG_CTX_OVERRIDES = (
         f"dataloader.batch_size={BATCH}", f"val_dataloader.batch_size={BATCH}",
     ]
     + [f"contextualizer.{d}.{o}" for o in SMALL_DECODER
-       for d in ("decoder_self", "decoder_team", "prior_probe", "leak_probe")]
+       for d in ("decoder_self", "decoder_team")]
+    + [f"{d}.{o}" for o in SMALL_DECODER
+       for d in ("prior_probe", "leak_probe")]
 )
 
 
@@ -843,6 +872,111 @@ def test_factorized_variant(workdir, zarr_path):
         os.chdir(cwd)
     check("FG Stage 2 wrote a checkpoint", os.path.isfile(os.path.join(
         workdir, "checkpoints", f"{TASK}_clsdpfg_Agent0_{N_EPISODES}", "1.ckpt")))
+
+
+def test_horizon_group(zarr_path):
+    """Horizon is a Hydra group so it composes with latent / sampler / action_space.
+
+    h8 must keep every existing checkpoint name byte-identical. h25 only appends `h25`
+    and resizes the windows; it does not train a workspace here (that would be slow
+    and would not catch the naming bugs this is for).
+    """
+    print("\n[10] Horizon group composition")
+    from diffusion_policy.dataset.multi_agent_image_dataset import MultiAgentImageDataset
+
+    cfg_b = load_cfg("cls_stage1.yaml", zarr_path, [])
+    check("Study B Stage 1 name is unchanged at h8",
+          cfg_b.checkpoint_name == f"{TASK}_ctx_Agent0_{N_EPISODES}",
+          cfg_b.checkpoint_name)
+    check("h8 Stage 1 future is 8", int(cfg_b.n_future_states) == 8)
+    check("h8 executed slice is 6", int(cfg_b.n_exec_steps) == 6)
+
+    cfg_b2 = load_cfg("cls_dp.yaml", zarr_path, [])
+    check("Study B Stage 2 name is unchanged at h8",
+          cfg_b2.checkpoint_name == f"{TASK}_clsdp_Agent0_{N_EPISODES}",
+          cfg_b2.checkpoint_name)
+    check("h8 Stage 2 horizon is 8", int(cfg_b2.horizon) == 8)
+    check("h8 Stage 2 n_exec_steps is 6", int(cfg_b2.n_exec_steps) == 6)
+
+    cfg_det = load_cfg("cls_stage1_det", zarr_path, [])
+    check("DET Stage 1 h8 name is ctxdet",
+          cfg_det.checkpoint_name == f"{TASK}_ctxdet_Agent0_{N_EPISODES}",
+          cfg_det.checkpoint_name)
+    cfg_fg = load_cfg("cls_stage1_fg", zarr_path, [])
+    check("FG Stage 1 h8 name is ctxfg",
+          cfg_fg.checkpoint_name == f"{TASK}_ctxfg_Agent0_{N_EPISODES}",
+          cfg_fg.checkpoint_name)
+    cfg_fg2 = load_cfg("cls_dp_fg", zarr_path, [])
+    check("FG Stage 2 h8 name is clsdpfg",
+          cfg_fg2.checkpoint_name == f"{TASK}_clsdpfg_Agent0_{N_EPISODES}",
+          cfg_fg2.checkpoint_name)
+
+    cfg1 = load_cfg("cls_stage1_fg", zarr_path, ["horizon=h25"])
+    check("FG+h25 Stage 1 tag is ctxfgh25",
+          cfg1.checkpoint_name == f"{TASK}_ctxfgh25_Agent0_{N_EPISODES}",
+          cfg1.checkpoint_name)
+    check("FG+h25 Stage 1 future is 25", int(cfg1.n_future_states) == 25)
+    check("encoder time embed tracks n_future_states",
+          int(cfg1.contextualizer.ma_encoder.n_future_states) == 25)
+    check("decoder_team time embed tracks n_future_states",
+          int(cfg1.contextualizer.decoder_team.n_future_states) == 25)
+
+    cfg_alias = load_cfg("cls_stage1_fg_h25", zarr_path, [])
+    check("convenience Stage 1 yaml matches horizon=h25",
+          cfg_alias.checkpoint_name == cfg1.checkpoint_name
+          and int(cfg_alias.n_future_states) == 25)
+
+    cfg2 = load_cfg("cls_dp_fg", zarr_path, ["sampler=flow", "horizon=h25"])
+    check("FG+flow+h25 Stage 2 tag is clsdpfgfmh25",
+          cfg2.checkpoint_name == f"{TASK}_clsdpfgfmh25_Agent0_{N_EPISODES}",
+          cfg2.checkpoint_name)
+    check("composed horizon is 25", int(cfg2.horizon) == 25 and int(cfg2.n_action_steps) == 25)
+    check("default n_exec_steps is the aligned slice (23)", int(cfg2.n_exec_steps) == 23)
+    check("flow head is selected",
+          str(cfg2.policy._target_).endswith("CLSFlowMatchingUnetImagePolicy"))
+    check("policy receives n_exec_steps", int(cfg2.policy.n_exec_steps) == 23)
+
+    cfg_recede = load_cfg(
+        "cls_dp_fg", zarr_path, ["sampler=flow", "horizon=h25", "n_exec_steps=6"]
+    )
+    check("n_exec_steps=6 is receding horizon on h25",
+          int(cfg_recede.horizon) == 25 and int(cfg_recede.n_exec_steps) == 6)
+    check("receding-horizon tag is still h25 (same checkpoint family)",
+          cfg_recede.checkpoint_name == cfg2.checkpoint_name)
+
+    cfg_conv = load_cfg("cls_dp_fg_fm_h25", zarr_path, [])
+    check("convenience Stage 2 yaml matches sampler=flow horizon=h25",
+          cfg_conv.checkpoint_name == cfg2.checkpoint_name
+          and int(cfg_conv.n_exec_steps) == 23
+          and str(cfg_conv.policy._target_).endswith("CLSFlowMatchingUnetImagePolicy"))
+
+    ds25 = MultiAgentImageDataset(
+        zarr_path=zarr_path, agent_id=0, stage=1, n_agents=N_AGENTS,
+        horizon=25, n_obs_steps=N_OBS, n_future_states=25,
+        seed=42, val_ratio=0.2, batch_size=BATCH, max_train_episodes=None,
+    )
+    batch = ds25.postprocess(ds25[np.arange(BATCH)], torch.device("cpu"))
+    fut = batch["future_states"].numpy()
+    check("n_future=25 window shape",
+          fut.shape == (BATCH, N_AGENTS, 25, STATE_DIM), str(fut.shape))
+    # EP_LEN=20, so the last 5 privileged steps pad by repeating the final frame.
+    ok_pad = True
+    for b in range(BATCH):
+        t = int(round(batch["own_state"].numpy()[b, 0]))
+        got = [int(round(v)) for v in fut[b, 0, :, 0]]
+        expected = [clamp(t + k, 0, EP_LEN - 1) for k in range(1, 26)]
+        ok_pad &= got == expected
+    check("n_future=25 pads past the episode end", ok_pad)
+
+    ds25_act = MultiAgentImageDataset(
+        zarr_path=zarr_path, agent_id=0, stage=2, n_agents=N_AGENTS,
+        horizon=25, n_obs_steps=N_OBS, n_future_states=25,
+        seed=42, val_ratio=0.2, batch_size=BATCH, max_train_episodes=None,
+    )
+    batch2 = ds25_act.postprocess(ds25_act[np.arange(BATCH)], torch.device("cpu"))
+    check("h25 action target spans 25",
+          tuple(batch2["action"].shape) == (BATCH, 25, STATE_DIM),
+          str(tuple(batch2["action"].shape)))
 
 
 def test_probe_detects_information():
@@ -989,6 +1123,7 @@ def main():
         test_eval_script(workdir)
         test_factorized_variant(workdir, zarr_path)
         test_probe_detects_information()
+        test_horizon_group(zarr_path)
         print(f"\nALL {len(PASSED)} PIPELINE CHECKS PASSED\n")
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

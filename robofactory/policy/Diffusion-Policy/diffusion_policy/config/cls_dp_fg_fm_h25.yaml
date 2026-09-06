@@ -1,0 +1,12 @@
+# CLS-DP Stage 2, FACTORIZED + flow-matching + 25-step action chunk.
+#
+# The three axes compose independently; this file is only a convenience alias for
+#   python train.py --config-name=cls_dp_fg.yaml sampler=flow horizon=h25
+# Checkpoints land under *_clsdpfgfmh25_*. Pair with a *_ctxfgh25_* Stage 1 prior.
+defaults:
+  - cls_dp_fg
+  - override /sampler: flow
+  - override /horizon: h25
+  - _self_
+
+name: cls_dp_fg_fm_h25

@@ -1,0 +1,11 @@
+# CLS-DP Stage 1, FACTORIZED + 25-step privileged future.
+#
+# Same as cls_stage1_fg.yaml with the horizon group swapped. Equivalent to
+#   python train.py --config-name=cls_stage1_fg.yaml horizon=h25
+# Checkpoints land under *_ctxfgh25_*.
+defaults:
+  - cls_stage1_fg
+  - override /horizon: h25
+  - _self_
+
+name: cls_stage1_fg_h25

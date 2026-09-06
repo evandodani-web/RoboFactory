@@ -203,6 +203,8 @@ class CLSConditionalUnet1D(nn.Module):
         self.up_modules = up_modules
         self.down_modules = down_modules
         self.final_conv = final_conv
+        # Last down block is Identity, so the sequence is halved len(down_dims)-1 times.
+        self.down_factor = 2 ** max(len(down_dims) - 1, 0)
 
         logger.info(
             "number of parameters: %e", sum(p.numel() for p in self.parameters())
@@ -225,6 +227,13 @@ class CLSConditionalUnet1D(nn.Module):
         output: (B, T, input_dim)
         """
         sample = einops.rearrange(sample, "b h t -> b t h")
+        horizon = sample.shape[-1]
+        # Conv down/up only inverts when T is a multiple of down_factor (4 for the
+        # default [256, 512, 1024]). Horizon 8 already is; 25 is not, so pad on the
+        # right and crop back. Factor-aligned lengths take the identity path.
+        pad = (self.down_factor - horizon % self.down_factor) % self.down_factor
+        if pad:
+            sample = torch.nn.functional.pad(sample, (0, pad), mode="replicate")
 
         timesteps = timestep
         if not torch.is_tensor(timesteps):
@@ -278,5 +287,7 @@ class CLSConditionalUnet1D(nn.Module):
             x = upsample(x)
 
         x = self.final_conv(x)
+        if pad:
+            x = x[..., :horizon]
         x = einops.rearrange(x, "b t h -> b h t")
         return x
