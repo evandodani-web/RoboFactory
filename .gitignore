@@ -60,3 +60,6 @@ htmlcov/
 !robofactory/assets/.gitkeep
 # local virtualenv
 .venv/
+
+# RunPod/local Vulkan ICD + env (machine-specific paths)
+.vulkan/

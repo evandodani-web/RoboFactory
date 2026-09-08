@@ -59,6 +59,7 @@ sudo apt update
 sudo apt install libgl1 libglvnd0 libegl1-mesa libgles2-mesa libopengl0
 ```
 
+On **RunPod / headless NVIDIA containers**, `nvidia-smi` working is not enough: Vulkan often still fails until the ICD path and `NVIDIA_DRIVER_CAPABILITIES` are fixed. See the full field guide: [docs/runpod-eval-setup.md](docs/runpod-eval-setup.md).
 ## 📦Generate Data
 You can use the following script to generate data. The generated data is usually placed in the demos/ folder.
 ```bash
