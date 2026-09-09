@@ -256,8 +256,9 @@ re-parse. Worth doing as its own variant.
 | Run | Latent | Notes |
 |---|---|---|
 | Study B | stochastic, monolithic | reproduced the paper, **61.0%** on LiftBarrier |
-| Study DET | deterministic, monolithic | isolates stochasticity — built, **not yet trained** |
-| Study FG | deterministic, factorized | this doc |
+| Study DET | deterministic, monolithic | isolates stochasticity — **49%** |
+| Study FG | deterministic, factorized | DET + split — **55%** (confounds DET) |
+| Study B-FG | stochastic, factorized | clean split on Study B — `cls_stage1_bfg` / `train_study_bfg.sh` |
 
 Checkpoint prefixes follow the existing convention with a distinct tag per variant
 (`*_ctxfg_*` / `*_clsdpfg_*`), so `eval_cls_sweep.sh`'s `CKPT_PREFIX` argument selects them and

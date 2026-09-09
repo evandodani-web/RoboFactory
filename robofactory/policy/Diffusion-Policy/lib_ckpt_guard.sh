@@ -2,9 +2,11 @@
 # Shared helpers for CLS-DP study scripts.
 #
 # Stage 1 checkpoint prefixes are study-owned:
-#   Study B   *_ctx_*
-#   Study DET *_ctxdet_*
-#   Study FG  *_ctxfg_*  (and *_ctxfgh25_* etc.)
+#   Study B     *_ctx_*
+#   Study B-H25 *_ctxh25_*
+#   Study DET   *_ctxdet_*
+#   Study FG    *_ctxfg_*  (DET + factorized; also *_ctxfgh25_* etc.)
+#   Study B-FG  *_ctxbfg_* (Study B stochastic + factorized)
 # Study FM does not own a Stage 1 prefix — it must reuse Study B's *_ctx_*.
 #
 # Refuse silent overwrites so a later study cannot clobber an earlier one's priors.

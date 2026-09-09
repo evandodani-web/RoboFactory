@@ -767,11 +767,13 @@ degrades, that is the mechanism showing up, not a bug.
 In deterministic mode the `ctx_kl` metric key holds the L2 alignment term. The key name is
 shared so the gate and epoch-averaging code stay common.
 
-### Study FG — factorized latent (built, not yet trained)
+### Study FG — DET + factorized latent (trained; LiftBarrier 55%)
 
 Study DET plus a split of the prior latent into a self half and a teammate half, each with
 its own decoder, and the privileged residual applied to the teammate half only. Design
 rationale in [CLS-DP-variant-factorized-grounded.md](CLS-DP-variant-factorized-grounded.md).
+**Confounds DET + factorization** vs Study B; for a clean split on the stochastic base see
+Study B-FG below.
 
 | Knob | Value |
 |---|---|
@@ -799,7 +801,7 @@ Clearing `prior_probe_stop_grad` converts the probe into a prior-only reconstruc
 That is a different experiment and should only be run once the measurement shows a gap.
 
 The same probe is flag-gated on every Stage 1 config (`enable_prior_probe` /
-`enable_leak_probe`). Defaults: **off** on Study B, **on** on DET and FG. The workspace
+`enable_leak_probe`). Defaults: **off** on Study B, **on** on DET, FG, and B-FG. The workspace
 clips probe parameters separately from the CVAE so a stop-grad probe cannot change
 contextualizer training via the global grad-norm clip. `cls_stage1_det_probe.yaml` is
 kept only as a `*_ctxdetprobe_*` checkpoint-prefix alias.
@@ -807,6 +809,26 @@ kept only as a `*_ctxdetprobe_*` checkpoint-prefix alias.
 The axes compose independently via Hydra groups (`sampler`, `action_space`, `horizon`).
 `horizon=h8` is the default and keeps the checkpoint names above unchanged.
 `horizon=h25` appends `h25` and must train its own Stage 1 (`time_embed` is length 25).
+
+### Study B-FG — Study B + factorized latent (built, not yet trained)
+
+Clean factorization ablation against Study B: same stochastic CVAE, Adam, 14x14 SigLIP,
+and 150 LiftBarrier demos; only the latent is split into `z_self` / `z_team` with separate
+decoders (residual on `z_team` only). Unlike Study FG, this does **not** inherit DET.
+
+| Knob | Value |
+|---|---|
+| Latent | Study B stochastic prior + FG split (`z_self` 128 / `z_team` 128) |
+| Deterministic | **false** (learned `sigma`; standard KL) |
+| Probes | `prior_probe` + `leak_probe`, both stop-gradiented |
+| Configs | `cls_stage1_bfg.yaml`, `cls_dp_bfg.yaml` |
+| Checkpoints | `checkpoints/LiftBarrier-rf_{ctxbfg,clsdpbfg}_Agent{0,1}_150/` |
+| Pipeline | `policy/Diffusion-Policy/train_study_bfg.sh` |
+| Eval | `eval_cls_sweep.sh ... clsdpbfg` |
+
+Does not overwrite Study FG's `*_ctxfg_*` / `*_clsdpfg_*`. Watch the leak probe: if it
+still says `NOT SEPARATED`, treat any success-rate delta as weak evidence that the split
+is doing real work.
 
 ### Study B-H25 — Study B + 25-step chunks (built, not yet trained)
 

@@ -815,6 +815,31 @@ def test_factorized_variant(workdir, zarr_path):
     check("decoder_team covers exactly the teammates",
           cfg1.contextualizer.decoder_team.n_agents == N_OTHERS)
 
+    # Study B-FG: same split on the stochastic Study B base (not DET).
+    cfg_bfg = load_cfg("cls_stage1_bfg", zarr_path, FG_CTX_OVERRIDES)
+    check("B-FG factorizes", cfg_bfg.contextualizer.factorize is True)
+    check("B-FG stays stochastic (not DET)",
+          cfg_bfg.contextualizer.deterministic is False
+          and cfg_bfg.contextualizer.prior_net.deterministic is False
+          and cfg_bfg.contextualizer.ma_encoder.deterministic is False)
+    check("B-FG Stage 1 tag is ctxbfg",
+          cfg_bfg.checkpoint_name == f"{TASK}_ctxbfg_Agent0_{N_EPISODES}",
+          cfg_bfg.checkpoint_name)
+    check("B-FG residual is team-width",
+          cfg_bfg.contextualizer.ma_encoder.latent_dim == TEAM_DIM)
+    check("B-FG probes enabled",
+          cfg_bfg.enable_prior_probe is True and cfg_bfg.enable_leak_probe is True)
+    cfg_bfg2 = load_cfg("cls_dp_bfg", zarr_path, [])
+    check("B-FG Stage 2 tag is clsdpbfg",
+          cfg_bfg2.checkpoint_name == f"{TASK}_clsdpbfg_Agent0_{N_EPISODES}",
+          cfg_bfg2.checkpoint_name)
+    check("B-FG Stage 2 prior stays stochastic",
+          cfg_bfg2.policy.prior_net.get("deterministic", False) is False)
+    check("B-FG Stage 2 still samples z",
+          cfg_bfg2.policy.latent_sample is True)
+    check("B-FG Stage 2 is not the DET/FG head chain",
+          "det" not in cfg_bfg2.checkpoint_name and "fg" != str(cfg_bfg2.latent_tag))
+
     ws1 = ContextualizerWorkspace(cfg1, output_dir=os.path.join(workdir, "out_fg1"))
     check("monolithic decoder is not built when factorized", ws1.model.ma_decoder is None)
     check("both probes are attached",

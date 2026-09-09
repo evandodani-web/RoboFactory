@@ -1,0 +1,17 @@
+# CLS-DP Stage 2, Study B + FACTORIZED latent ("Study B-FG").
+#
+# Factorization is internal to Stage 1: the prior still emits one 256-d latent and the
+# action expert still cross-attends to all of it. This differs from cls_dp.yaml only in
+# the checkpoint tag and which Stage 1 prior it pairs with (*_ctxbfg_*).
+#
+# Unlike cls_dp_fg.yaml (which inherits cls_dp_det), this stays on Study B's stochastic
+# prior: prior_net is not deterministic, and latent_sample remains True.
+#
+# Pair with cls_stage1_bfg / *_ctxbfg_*. Checkpoints land under *_clsdpbfg_*.
+defaults:
+  - cls_dp
+  - _self_
+
+name: cls_dp_bfg
+
+latent_tag: bfg

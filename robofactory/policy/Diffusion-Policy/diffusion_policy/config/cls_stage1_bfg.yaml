@@ -1,0 +1,80 @@
+# CLS-DP Stage 1, Study B + FACTORIZED latent ("Study B-FG").
+#
+# Clean factorization ablation against Study B: stochastic prior (KL with learned
+# sigma), Adam / SigLIP / 150 demos unchanged; only the latent is split.
+#
+# This is NOT Study FG (`cls_stage1_fg.yaml`), which inherits Study DET's
+# deterministic latent. Compare:
+#   Study B     stochastic, monolithic   -> *_ctx_*
+#   Study DET   deterministic, monolithic -> *_ctxdet_*
+#   Study FG    deterministic, factorized -> *_ctxfg_*
+#   Study B-FG  stochastic, factorized    -> *_ctxbfg_*   (this file)
+#
+#   z_self (128)  -> decoder_self  -> MY future        (privileged residual does NOT apply)
+#   z_team (128)  -> decoder_team  -> THEIR futures    (residual applies here only)
+#
+# Both probes are measurement-only (stop-grad):
+#   prior_probe -> is the prior alone sufficient? (deployment sees no residual)
+#   leak_probe  -> did the split actually hold?   (should do BADLY)
+#
+# Equivalent composition without this file is not available as a one-liner today
+# because factorization needs the decoder_self / decoder_team module blocks.
+defaults:
+  - cls_stage1
+  - _self_
+
+name: cls_stage1_bfg
+
+# Distinct from Study FG's "fg" so DET-based FG checkpoints are never reused or overwritten.
+latent_tag: bfg
+
+self_dim: 128
+team_dim: ${eval:'${latent_dim} - ${self_dim}'}
+n_others: ${eval:'${n_agents} - 1'}
+
+enable_prior_probe: true
+enable_leak_probe: true
+prior_probe:
+  latent_dim: ${team_dim}
+leak_probe:
+  latent_dim: ${self_dim}
+
+contextualizer:
+  # Explicit: stay on Study B's stochastic CVAE. Do not inherit DET's deterministic=true.
+  deterministic: false
+  factorize: True
+  self_dim: ${self_dim}
+
+  prior_net:
+    deterministic: false
+  ma_encoder:
+    # Privileged encoder still sees ALL agents' futures, but emits a team-sized residual.
+    deterministic: false
+    latent_dim: ${team_dim}
+
+  # Unused when factorize=True; the two decoders below replace it.
+  ma_decoder: null
+
+  decoder_self:
+    _target_: diffusion_policy.model.cls.ma_kinematics.MAKinematicsDecoder
+    state_dim: ${state_dim}
+    n_agents: 1
+    n_future_states: ${n_future_states}
+    latent_dim: ${self_dim}
+    d_model: 256
+    n_layers: 2
+    n_heads: 4
+    dim_feedforward: 512
+    dropout: 0.0
+
+  decoder_team:
+    _target_: diffusion_policy.model.cls.ma_kinematics.MAKinematicsDecoder
+    state_dim: ${state_dim}
+    n_agents: ${n_others}
+    n_future_states: ${n_future_states}
+    latent_dim: ${team_dim}
+    d_model: 256
+    n_layers: 2
+    n_heads: 4
+    dim_feedforward: 512
+    dropout: 0.0

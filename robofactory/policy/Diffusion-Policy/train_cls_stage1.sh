@@ -18,9 +18,10 @@
 #   python script/parse_pkl_to_zarr_multi.py --task_name ${task_name} --load_num N --agent_num N_AGENTS
 #   python script/precompute_siglip_features.py --zarr_path data/zarr_data/${task_name}_multi_N.zarr --pool_grid 14
 #
-# Owns Study B Stage 1 prefixes:
+# Owns Stage 1 prefixes launched through this entrypoint:
 #   cls_stage1      -> checkpoints/{task}_ctx_Agent{i}_{n}/
 #   cls_stage1_h25  -> checkpoints/{task}_ctxh25_Agent{i}_{n}/
+#   cls_stage1_bfg  -> checkpoints/{task}_ctxbfg_Agent{i}_{n}/   (Study B-FG)
 # Study FM reuses *_ctx_* and must never retrain them. Set FORCE_OVERWRITE_CTX=1 only
 # when intentionally regenerating a Stage 1 final.
 set -euo pipefail
@@ -52,10 +53,11 @@ fi
 # entrypoints use CONFIG_NAME=cls_stage1_h25 so the guarded path is correct.
 case "${config_name}" in
     cls_stage1_h25) ctx_tag=ctxh25 ;;
+    cls_stage1_bfg) ctx_tag=ctxbfg ;;
     *) ctx_tag=ctx ;;
 esac
 final_ckpt="checkpoints/${task_name}_${ctx_tag}_Agent${agent_id}_${load_num}/100.ckpt"
-refuse_overwrite_ckpt "${final_ckpt}" "Study B Stage 1 (*_${ctx_tag}_*)"
+refuse_overwrite_ckpt "${final_ckpt}" "Stage 1 (*_${ctx_tag}_*)"
 
 echo -e "\033[33mgpu id (to use): ${gpu_id}\033[0m"
 echo -e "\033[33mStage 1 contextualizer | ${task_name} agent ${agent_id}/${n_agents} | config=${config_name}\033[0m"
