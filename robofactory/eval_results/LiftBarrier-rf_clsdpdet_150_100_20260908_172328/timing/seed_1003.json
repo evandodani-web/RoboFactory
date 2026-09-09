@@ -1,0 +1,28 @@
+{
+  "env_id": "LiftBarrier-rf",
+  "seed": 1003,
+  "ckpt_prefix": "clsdpdet",
+  "checkpoint_num": 100,
+  "num_inference_steps": 100,
+  "solver": "ddpm",
+  "success": true,
+  "policy_ms_total": 34009.9,
+  "episode_ms_total": 61000.3,
+  "policy_fraction_of_episode": 0.5575,
+  "per_agent": [
+    {
+      "policy_calls": 39,
+      "denoiser_calls": 3900,
+      "ms_per_action": 428.1,
+      "denoiser_calls_per_action": 100.0,
+      "total_ms": 16695.9
+    },
+    {
+      "policy_calls": 39,
+      "denoiser_calls": 3900,
+      "ms_per_action": 443.948,
+      "denoiser_calls_per_action": 100.0,
+      "total_ms": 17314.0
+    }
+  ]
+}

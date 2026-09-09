@@ -9,7 +9,13 @@
 #   bash policy/Diffusion-Policy/train_cls_stage1_det.sh ${task_name} ${load_num} ${agent_id} ${n_agents} ${seed} ${gpu_id}
 # Example:
 #   bash policy/Diffusion-Policy/train_cls_stage1_det.sh LiftBarrier-rf 150 0 2 42 0
+#
+# Owns checkpoints/{task}_ctxdet_Agent{i}_{n}/. FORCE_OVERWRITE_CTX=1 to regenerate.
 set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib_ckpt_guard.sh
+source "${SCRIPT_DIR}/lib_ckpt_guard.sh"
 
 task_name=${1}
 load_num=${2}
@@ -28,6 +34,9 @@ if [ ! -d "${zarr_path}" ]; then
     echo "Run script/parse_pkl_to_zarr_multi.py and script/precompute_siglip_features.py first."
     exit 1
 fi
+
+final_ckpt="checkpoints/${task_name}_ctxdet_Agent${agent_id}_${load_num}/100.ckpt"
+refuse_overwrite_ckpt "${final_ckpt}" "Study DET Stage 1 (*_ctxdet_*)"
 
 echo -e "\033[33mgpu id (to use): ${gpu_id}\033[0m"
 echo -e "\033[33mStage 1 contextualizer [DETERMINISTIC] | ${task_name} agent ${agent_id}/${n_agents}\033[0m"

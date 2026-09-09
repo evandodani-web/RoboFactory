@@ -17,7 +17,17 @@
 #   python script/parse_h5_to_pkl_multi.py --task_name ${task_name} --load_num N --agent_num N_AGENTS
 #   python script/parse_pkl_to_zarr_multi.py --task_name ${task_name} --load_num N --agent_num N_AGENTS
 #   python script/precompute_siglip_features.py --zarr_path data/zarr_data/${task_name}_multi_N.zarr --pool_grid 14
+#
+# Owns Study B Stage 1 prefixes:
+#   cls_stage1      -> checkpoints/{task}_ctx_Agent{i}_{n}/
+#   cls_stage1_h25  -> checkpoints/{task}_ctxh25_Agent{i}_{n}/
+# Study FM reuses *_ctx_* and must never retrain them. Set FORCE_OVERWRITE_CTX=1 only
+# when intentionally regenerating a Stage 1 final.
 set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib_ckpt_guard.sh
+source "${SCRIPT_DIR}/lib_ckpt_guard.sh"
 
 task_name=${1}
 load_num=${2}
@@ -36,6 +46,16 @@ if [ ! -d "${zarr_path}" ]; then
     echo "Run script/parse_pkl_to_zarr_multi.py and script/precompute_siglip_features.py first."
     exit 1
 fi
+
+# Match the checkpoint prefix this config writes. A bare `horizon=h25` override without
+# CONFIG_NAME still bypasses this (writes *_ctxh25_* while guarding *_ctx_*); study
+# entrypoints use CONFIG_NAME=cls_stage1_h25 so the guarded path is correct.
+case "${config_name}" in
+    cls_stage1_h25) ctx_tag=ctxh25 ;;
+    *) ctx_tag=ctx ;;
+esac
+final_ckpt="checkpoints/${task_name}_${ctx_tag}_Agent${agent_id}_${load_num}/100.ckpt"
+refuse_overwrite_ckpt "${final_ckpt}" "Study B Stage 1 (*_${ctx_tag}_*)"
 
 echo -e "\033[33mgpu id (to use): ${gpu_id}\033[0m"
 echo -e "\033[33mStage 1 contextualizer | ${task_name} agent ${agent_id}/${n_agents} | config=${config_name}\033[0m"

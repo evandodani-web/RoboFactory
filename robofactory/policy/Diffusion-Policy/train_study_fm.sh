@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Study FM: flow-matching Stage 2 action expert (raw action space).
 #
-# Reuses the unchanged Stage 1 contextualizer training recipe (Study B settings:
-# LiftBarrier, 150 demos, Adam, 14x14 SigLIP cache) and swaps only Stage 2 sampling
-# from 100-step DDPM to a handful of flow-matching Euler steps.
+# Modular contract (do not break this):
+#   Stage 1  — REUSE Study B's frozen contextualizers (*_ctx_*). Never retrain them.
+#   Stage 2  — train only the flow-matching action expert (*_clsdpfm_*).
+#
+# Retraining Stage 1 into *_ctx_* would silently replace the priors that Study B's 61%
+# result and every FM run pin to. train_cls_stage1.sh also refuses that overwrite unless
+# FORCE_OVERWRITE_CTX=1; this script never calls it.
 #
 # The evaluation harness supports re-evaluating the same checkpoint at multiple
 # sampler step counts via the optional 10th argument.
@@ -13,6 +17,10 @@ set -euo pipefail
 REPO_ROOT=/workspace/RoboFactory
 cd "${REPO_ROOT}/robofactory"
 source "${REPO_ROOT}/.venv/bin/activate"
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib_ckpt_guard.sh
+source "${SCRIPT_DIR}/lib_ckpt_guard.sh"
 
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export HYDRA_FULL_ERROR=1
@@ -45,24 +53,18 @@ if n != 197:
     sys.exit(1)
 PY
 
-for agent in $(seq 0 $((AGENTS - 1))); do
-    echo "=== Study FM: Stage 1 agent ${agent} ==="
-    bash policy/Diffusion-Policy/train_cls_stage1.sh \
-        "${TASK}" "${DEMOS}" "${agent}" "${AGENTS}" "${SEED}" "${GPU}" \
-        | tee "${LOG_DIR}/stage1_agent${agent}.log"
-done
-
+echo
+echo "=== Study FM: reusing Study B Stage 1 (*_ctx_*) — will not retrain ==="
 for agent in $(seq 0 $((AGENTS - 1))); do
     ckpt="checkpoints/${TASK}_ctx_Agent${agent}_${DEMOS}/100.ckpt"
-    if [ ! -f "${ckpt}" ]; then
-        echo "MISSING ${ckpt} — Stage 1 agent ${agent} did not finish"
-        exit 1
-    fi
+    require_ckpt "${ckpt}" \
+        "Train Study B Stage 1 first (train_study_b.sh / train_cls_stage1.sh). Study FM must reuse those priors, not rewrite them."
 done
 
-echo
-echo "=== Study FM: Stage 1 gate summary ==="
-grep -h "Stage 1 gate" "${LOG_DIR}"/stage1_agent*.log || echo "(no gate line found)"
+echo "Fingerprints of reused Study B contextualizers:"
+for agent in $(seq 0 $((AGENTS - 1))); do
+    print_ckpt_fingerprint "checkpoints/${TASK}_ctx_Agent${agent}_${DEMOS}/100.ckpt"
+done | tee "${LOG_DIR}/reused_stage1_fingerprints.txt"
 
 for agent in $(seq 0 $((AGENTS - 1))); do
     echo "=== Study FM: Stage 2 agent ${agent} ==="
@@ -87,4 +89,3 @@ To re-evaluate a trained checkpoint at (example) 8 sampler steps:
       ${TASK} configs/table/lift_barrier.yaml ${DEMOS} 100 1000 1099 10 250 clsdpfm 8
 
 EOF
-

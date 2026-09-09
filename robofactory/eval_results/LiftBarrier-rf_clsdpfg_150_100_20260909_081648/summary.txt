@@ -1,0 +1,5 @@
+task: LiftBarrier-rf
+variant: clsdpfg
+demos: 150  checkpoint: 100
+seeds: 1000..1099
+total: 100  success: 55  success_rate: 55.0%

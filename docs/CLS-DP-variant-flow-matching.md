@@ -23,9 +23,14 @@ matching is not applicable in the first place — `z` is not *generated*, it is 
 training signal is KL alignment plus reconstruction, not a transport objective.
 
 So Stage 1 is byte-identical to whatever study we branch from, and the FM variant reuses that
-study's Stage 1 checkpoints directly. `CLSRobotWorkspace._load_prior_weights` pulls only
-`prior_net.*`, which is identical across every variant, so `*_ctx_*`, `*_ctxdet_*` and
-`*_ctxfg_*` all load into an FM Stage 2 without modification.
+study's Stage 1 checkpoints directly. **Study FM does not retrain Stage 1.** `train_study_fm.sh`
+requires existing Study B `*_ctx_*` files and trains only `*_clsdpfm_*`; `train_cls_stage1.sh`
+refuses to overwrite an existing `100.ckpt` unless `FORCE_OVERWRITE_CTX=1`. That keeps the
+sampler swap attributable: same frozen prior, different Stage 2 transport.
+
+`CLSRobotWorkspace._load_prior_weights` pulls only `prior_net.*`, which is identical across
+every variant, so `*_ctx_*`, `*_ctxdet_*` and `*_ctxfg_*` all load into an FM Stage 2 without
+modification.
 
 Where the 100 steps actually cost us:
 

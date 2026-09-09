@@ -857,20 +857,26 @@ Eval uses `max_steps=65` so the env-step budget matches Study B (250 × 6).
 
 Drop any axis without a new file, e.g. DDPM at h25 is `cls_dp_fg.yaml horizon=h25`.
 
-### Study FM — flow-matching Stage 2 action expert (built, not yet trained)
+### Study FM — flow-matching Stage 2 action expert
 
 Same contextualizer and training set as Study B, but replaces the Stage 2 DDPM sampler
 with a rectified-flow / conditional-OT sampler (Euler integration in ~4 steps).
 Stage 2 still outputs the same (executed) 6-step action slice, so it is a drop-in
 replacement for eval.
 
+**Modular contract:** Study FM does **not** own a Stage 1 prefix. `train_study_fm.sh`
+requires existing Study B `*_ctx_*` checkpoints and trains only `*_clsdpfm_*`. It never
+calls `train_cls_stage1.sh`. The Stage 1 writers refuse to overwrite an existing
+`100.ckpt` unless `FORCE_OVERWRITE_CTX=1`, so a later study cannot silently replace the
+priors that Study B and FM pin to.
+
 | Knob | Value |
 |---|---|
-| Stage 1 | reuses Study B `_ctx_` checkpoints |
+| Stage 1 | reuses Study B `_ctx_` checkpoints (never retrains them) |
 | Stage 2 head | `sampler=flow` (transport: `RectifiedFlowTransport`) |
 | Action space | raw joint chunk first |
 | Temporal-consistency | default off (`temporal_consistency_weight=0.0`) |
-| Checkpoints | `checkpoints/LiftBarrier-rf_{ctx,clsdpfm}_Agent{0,1}_150/` |
+| Checkpoints | Stage 2 only under `checkpoints/LiftBarrier-rf_clsdpfm_Agent{0,1}_150/`; Stage 1 is Study B's `*_ctx_*` |
 | Pipeline | `policy/Diffusion-Policy/train_study_fm.sh` |
 | Eval | `policy/Diffusion-Policy/eval_cls_sweep.sh ... clsdpfm` (optionally sweep steps) |
 

@@ -2,6 +2,10 @@
 # Study B: LiftBarrier, 150 demos, Adam, full 14x14 SigLIP.
 # Recaches SigLIP if needed, then Stage 1 (both agents) then Stage 2 (both agents).
 # Study A checkpoints (*_100) are left untouched.
+#
+# Owns *_ctx_* and *_clsdp_*. Study FM / other sampler swaps must reuse *_ctx_*, never
+# retrain it. Re-running this script refuses to overwrite existing *_ctx_*/100.ckpt unless
+# FORCE_OVERWRITE_CTX=1 is set.
 set -euo pipefail
 
 REPO_ROOT=/workspace/RoboFactory

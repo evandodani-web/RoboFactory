@@ -374,17 +374,21 @@ def main(args: Args):
 
     env: BaseEnv = gym.make(env_id, **env_kwargs)
 
-    record_dir = (
-        args.record_dir
-        + "/"
-        + str(args.seed)
-        + "_"
-        + str(args.data_num)
-        + "_"
-        + str(args.checkpoint_num)
+    # Unique per (variant, steps, demos, ckpt, seed) so sweeps and re-runs do not
+    # clobber each other. Callers can still nest under a dated run dir via --record-dir.
+    seed0 = args.seed[0] if isinstance(args.seed, list) else args.seed
+    steps_tag = (
+        f"s{args.num_inference_steps}"
+        if args.num_inference_steps is not None
+        else "sdefault"
     )
-    if record_dir:
-        record_dir = record_dir.format(env_id=env_id)
+    record_dir = None
+    if args.record_dir:
+        record_dir = os.path.join(
+            args.record_dir.format(env_id=env_id),
+            f"{args.ckpt_prefix}_{steps_tag}_{args.data_num}_{args.checkpoint_num}",
+            f"seed_{seed0}",
+        )
         env = RecordEpisodeMA(
             env,
             record_dir,

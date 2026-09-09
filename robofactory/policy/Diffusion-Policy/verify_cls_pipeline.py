@@ -1067,6 +1067,36 @@ def test_probe_detects_information():
     check("the gap is large enough to be a usable signal", ratio > 2.0)
 
 
+def test_study_fm_modularity():
+    """Study FM must reuse Study B *_ctx_* and never retrain into that prefix.
+
+    This is a source-level regression guard: the failure mode is silent prior swap, which
+    no weight-shape check would catch after the fact.
+    """
+    print("\n[11] Study FM Stage 1 modularity")
+    fm_path = os.path.join(HERE, "train_study_fm.sh")
+    stage1_path = os.path.join(HERE, "train_cls_stage1.sh")
+    guard_path = os.path.join(HERE, "lib_ckpt_guard.sh")
+    with open(fm_path, encoding="utf-8") as f:
+        fm = f.read()
+    with open(stage1_path, encoding="utf-8") as f:
+        stage1 = f.read()
+    with open(guard_path, encoding="utf-8") as f:
+        guard = f.read()
+
+    check("lib_ckpt_guard.sh defines refuse_overwrite_ckpt",
+          "refuse_overwrite_ckpt()" in guard)
+    check("train_study_fm.sh does not invoke train_cls_stage1.sh",
+          "bash policy/Diffusion-Policy/train_cls_stage1.sh" not in fm
+          and "bash ${SCRIPT_DIR}/train_cls_stage1.sh" not in fm)
+    check("train_study_fm.sh requires existing *_ctx_* checkpoints",
+          "require_ckpt" in fm and "_ctx_Agent" in fm)
+    check("train_cls_stage1.sh refuses overwrite without FORCE_OVERWRITE_CTX",
+          "refuse_overwrite_ckpt" in stage1 and "FORCE_OVERWRITE_CTX" in stage1)
+    check("train_study_fm.sh records reused Stage 1 fingerprints",
+          "print_ckpt_fingerprint" in fm and "reused_stage1_fingerprints.txt" in fm)
+
+
 def test_eval_script(workdir):
     """Cover eval_multi_cls_dp.py's pure logic without the simulator.
 
@@ -1163,6 +1193,7 @@ def main():
         test_factorized_variant(workdir, zarr_path)
         test_probe_detects_information()
         test_horizon_group(zarr_path)
+        test_study_fm_modularity()
         print(f"\nALL {len(PASSED)} PIPELINE CHECKS PASSED\n")
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
