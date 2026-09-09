@@ -808,6 +808,32 @@ The axes compose independently via Hydra groups (`sampler`, `action_space`, `hor
 `horizon=h8` is the default and keeps the checkpoint names above unchanged.
 `horizon=h25` appends `h25` and must train its own Stage 1 (`time_embed` is length 25).
 
+### Study B-H25 — Study B + 25-step chunks (built, not yet trained)
+
+Clean longer-horizon ablation against Study B: same latent, Adam, 14x14 SigLIP, and
+150 LiftBarrier demos; only the action chunk and privileged-future windows grow to 25.
+This is the study that answers "does longer chunking help?" without confounding FG or FM.
+
+| Knob | Value |
+|---|---|
+| Latent | Study B (stochastic 256-d prior, no factorization) |
+| Stage 2 head | `SAMPLER=ddpm` (default) or `SAMPLER=flow` |
+| Horizon | `horizon=h25` → `horizon=n_action_steps=n_future_states=25` |
+| Executed steps | 23 (`25 - n_obs_steps + 1`); receding-horizon ablation is `n_exec_steps=6` |
+| Configs | `cls_stage1.yaml horizon=h25`, `cls_dp.yaml horizon=h25` (+ optional `sampler=flow`) |
+| Convenience | `cls_stage1_h25.yaml`, `cls_dp_h25.yaml`, `cls_dp_fm_h25.yaml` |
+| Checkpoints | `*_ctxh25_*` Stage 1; `*_clsdph25_*` (DDPM) or `*_clsdpfmh25_*` (flow) |
+| Pipeline | `policy/Diffusion-Policy/train_study_b_h25.sh` |
+| Eval | `eval_cls_sweep.sh ... 10 65 clsdph25` (or `clsdpfmh25` when `SAMPLER=flow`) |
+
+`SAMPLER=ddpm|flow` is the modular Stage 2 flag: one Stage 1 prior family (`*_ctxh25_*`),
+one Stage 2 yaml (`cls_dp_h25`), and the Hydra `sampler` group swaps DDPM for flow
+matching. `cls_dp_fm_h25.yaml` is only a named alias for `cls_dp_h25.yaml sampler=flow`.
+
+Stage 1 h8 `*_ctx_*` checkpoints are **not** reusable: `time_embed` is
+`n_future_states` long. Eval uses `max_steps=65` so the env-step budget matches Study B
+(250 × 6). Prefer this study over FG-FM-H25 when isolating the horizon axis.
+
 ### Study FG-FM-H25 — factorized + flow + 25-step chunks (built, not yet trained)
 
 DET + FG split + flow-matching Stage 2 + 25-step action / privileged-future windows.

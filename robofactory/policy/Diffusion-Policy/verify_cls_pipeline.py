@@ -898,6 +898,45 @@ def test_horizon_group(zarr_path):
     check("h8 Stage 2 horizon is 8", int(cfg_b2.horizon) == 8)
     check("h8 Stage 2 n_exec_steps is 6", int(cfg_b2.n_exec_steps) == 6)
 
+    # Study B-H25: clean longer-chunk ablation (horizon only; DDPM by default).
+    cfg_bh25_s1 = load_cfg("cls_stage1", zarr_path, ["horizon=h25"])
+    check("B+h25 Stage 1 tag is ctxh25",
+          cfg_bh25_s1.checkpoint_name == f"{TASK}_ctxh25_Agent0_{N_EPISODES}",
+          cfg_bh25_s1.checkpoint_name)
+    check("B+h25 Stage 1 future is 25", int(cfg_bh25_s1.n_future_states) == 25)
+    cfg_bh25_s1_alias = load_cfg("cls_stage1_h25", zarr_path, [])
+    check("convenience cls_stage1_h25 matches horizon=h25",
+          cfg_bh25_s1_alias.checkpoint_name == cfg_bh25_s1.checkpoint_name
+          and int(cfg_bh25_s1_alias.n_future_states) == 25)
+
+    cfg_bh25_s2 = load_cfg("cls_dp", zarr_path, ["horizon=h25"])
+    check("B+h25 Stage 2 DDPM tag is clsdph25",
+          cfg_bh25_s2.checkpoint_name == f"{TASK}_clsdph25_Agent0_{N_EPISODES}",
+          cfg_bh25_s2.checkpoint_name)
+    check("B+h25 default head is DDPM",
+          str(cfg_bh25_s2.policy._target_).endswith("CLSDiffusionUnetImagePolicy"))
+    check("B+h25 executed slice is 23", int(cfg_bh25_s2.n_exec_steps) == 23)
+    cfg_bh25_s2_alias = load_cfg("cls_dp_h25", zarr_path, [])
+    check("convenience cls_dp_h25 matches horizon=h25 DDPM",
+          cfg_bh25_s2_alias.checkpoint_name == cfg_bh25_s2.checkpoint_name
+          and str(cfg_bh25_s2_alias.policy._target_).endswith(
+              "CLSDiffusionUnetImagePolicy"))
+
+    # Same Stage 1 prior family; SAMPLER=flow / sampler=flow flips only the head.
+    cfg_bh25_fm = load_cfg("cls_dp_h25", zarr_path, ["sampler=flow"])
+    check("B+h25+flow tag is clsdpfmh25",
+          cfg_bh25_fm.checkpoint_name == f"{TASK}_clsdpfmh25_Agent0_{N_EPISODES}",
+          cfg_bh25_fm.checkpoint_name)
+    check("B+h25+flow head is flow-matching",
+          str(cfg_bh25_fm.policy._target_).endswith("CLSFlowMatchingUnetImagePolicy"))
+    check("B+h25+flow keeps horizon 25 / exec 23",
+          int(cfg_bh25_fm.horizon) == 25 and int(cfg_bh25_fm.n_exec_steps) == 23)
+    cfg_bh25_fm_alias = load_cfg("cls_dp_fm_h25", zarr_path, [])
+    check("convenience cls_dp_fm_h25 matches cls_dp_h25 sampler=flow",
+          cfg_bh25_fm_alias.checkpoint_name == cfg_bh25_fm.checkpoint_name
+          and str(cfg_bh25_fm_alias.policy._target_).endswith(
+              "CLSFlowMatchingUnetImagePolicy"))
+
     cfg_det = load_cfg("cls_stage1_det", zarr_path, [])
     check("DET Stage 1 h8 name is ctxdet",
           cfg_det.checkpoint_name == f"{TASK}_ctxdet_Agent0_{N_EPISODES}",

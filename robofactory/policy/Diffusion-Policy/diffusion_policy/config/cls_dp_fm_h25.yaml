@@ -1,0 +1,14 @@
+# CLS-DP Stage 2, Study B + flow-matching + 25-step action chunk.
+#
+# Same Stage 1 prior family as cls_dp_h25 (*_ctxh25_*), but sampler=flow instead of
+# the default DDPM head. Equivalent to
+#   python train.py --config-name=cls_dp_h25.yaml sampler=flow
+#   python train.py --config-name=cls_dp.yaml sampler=flow horizon=h25
+# Checkpoints land under *_clsdpfmh25_*.
+defaults:
+  - cls_dp
+  - override /sampler: flow
+  - override /horizon: h25
+  - _self_
+
+name: cls_dp_fm_h25

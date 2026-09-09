@@ -2,10 +2,15 @@
 # CLS-DP Stage 1: train the contextualizer for one agent.
 #
 # Usage:
-#   bash policy/Diffusion-Policy/train_cls_stage1.sh ${task_name} ${load_num} ${agent_id} ${n_agents} ${seed} ${gpu_id}
+#   bash policy/Diffusion-Policy/train_cls_stage1.sh ${task_name} ${load_num} ${agent_id} ${n_agents} ${seed} ${gpu_id} [hydra overrides...]
 # Example (LiftBarrier has 2 agents, so run it twice):
 #   bash policy/Diffusion-Policy/train_cls_stage1.sh LiftBarrier-rf 150 0 2 42 0
 #   bash policy/Diffusion-Policy/train_cls_stage1.sh LiftBarrier-rf 150 1 2 42 0
+# Longer horizon (Study B + h25):
+#   CONFIG_NAME=cls_stage1_h25 bash policy/Diffusion-Policy/train_cls_stage1.sh LiftBarrier-rf 150 0 2 42 0
+#   bash policy/Diffusion-Policy/train_cls_stage1.sh LiftBarrier-rf 150 0 2 42 0 horizon=h25
+#
+# CONFIG_NAME selects a convenience yaml (default cls_stage1).
 #
 # Prerequisites:
 #   python script/generate_instructions.py --all
@@ -22,7 +27,7 @@ seed=${5:-42}
 gpu_id=${6:-0}
 
 DEBUG=False
-config_name=cls_stage1
+config_name=${CONFIG_NAME:-cls_stage1}
 exp_name=${task_name}-cls-stage1
 
 zarr_path="data/zarr_data/${task_name}_multi_${load_num}.zarr"
@@ -33,7 +38,7 @@ if [ ! -d "${zarr_path}" ]; then
 fi
 
 echo -e "\033[33mgpu id (to use): ${gpu_id}\033[0m"
-echo -e "\033[33mStage 1 contextualizer | ${task_name} agent ${agent_id}/${n_agents}\033[0m"
+echo -e "\033[33mStage 1 contextualizer | ${task_name} agent ${agent_id}/${n_agents} | config=${config_name}\033[0m"
 
 export HYDRA_FULL_ERROR=1
 export CUDA_VISIBLE_DEVICES=${gpu_id}
@@ -47,4 +52,5 @@ python ./policy/Diffusion-Policy/train.py --config-name=${config_name}.yaml \
     training.debug=$DEBUG \
     training.seed=${seed} \
     training.device="cuda:0" \
-    exp_name=${exp_name}
+    exp_name=${exp_name} \
+    "${@:7}"

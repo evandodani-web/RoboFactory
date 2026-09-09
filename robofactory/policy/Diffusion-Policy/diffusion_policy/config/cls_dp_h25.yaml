@@ -1,0 +1,17 @@
+# CLS-DP Stage 2, Study B + 25-step action chunk (DDPM head).
+#
+# Clean longer-horizon ablation against Study B: same latent, same Adam / SigLIP /
+# 150-demo recipe; only the action and privileged-future windows grow to 25.
+# Equivalent to
+#   python train.py --config-name=cls_dp.yaml horizon=h25
+# Checkpoints land under *_clsdph25_*. Pair with a *_ctxh25_* Stage 1 prior.
+#
+# Swap the generative head without a new latent recipe:
+#   python train.py --config-name=cls_dp_h25.yaml sampler=flow   -> *_clsdpfmh25_*
+# or use the convenience alias cls_dp_fm_h25.yaml / SAMPLER=flow on the study script.
+defaults:
+  - cls_dp
+  - override /horizon: h25
+  - _self_
+
+name: cls_dp_h25

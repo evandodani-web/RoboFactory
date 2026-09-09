@@ -93,7 +93,8 @@ checkpoint_name: ${task_name}_clsdp${latent_tag}${head_tag}${space_tag}${horizon
 
 With all tags empty this resolves to `LiftBarrier-rf_clsdp_Agent0_150` — **byte-identical to
 today**, so Study B, DET and FG checkpoint paths are unchanged. New combinations name themselves:
-`clsdpfm` (Study B + flow), `clsdpdetfm` (DET + flow), `clsdpfgfmh25` (FG + flow + horizon 25).
+`clsdpfm` (Study B + flow), `clsdph25` / `clsdpfmh25` (Study B + horizon 25, DDPM or flow),
+`clsdpdetfm` (DET + flow), `clsdpfgfmh25` (FG + flow + horizon 25).
 
 `eval_cls_sweep.sh` already takes an arbitrary prefix string as its 9th argument, so evaluation
 needs no changes at all. The existing `verify_cls_pipeline.py` assertions (`"clsdpdet" in
