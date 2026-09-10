@@ -182,13 +182,24 @@ the embedding is above a threshold when scaled and below it when not.
 
 ### Sigma sampling during training
 
-Configurable, defaulting to the least opinionated option so the first run is a clean swap:
+Originally defaulted to the least opinionated option so the first run was a clean swap. That
+first run is now done, and the default has moved to `beta` at scale 1.5 — see the step-count
+result in section 10:
 
 | `sigma_dist` | Draw | Notes |
 |---|---|---|
-| `uniform` (default) | `U(0, 1)` | No tuning axis. The honest "pure swap" |
-| `logit_normal` | `sigmoid(m + s * randn)` | SD3's choice; concentrates on mid-sigma |
-| `beta` | Beta-shaped toward `sigma -> 1` | pi0-style, emphasises high noise |
+| `beta` (default, scale 1.5) | Beta(1.5, 1) toward `sigma -> 1` | pi0/pi0.5/SmolVLA/GR00T/WALL-X all use exactly this |
+| `uniform` | `U(0, 1)` | The original "pure swap". What the first FM checkpoint trained with |
+| `logit_normal` | `sigmoid(m + s * randn)` | SD3's choice; concentrates on mid-sigma. Wants scale back at 1.0 |
+
+`sigma_dist_scale` means a different thing per distribution (`a` in Beta(a, 1) versus the
+logit-normal's std), so it defaults to `None` and each distribution resolves its own field
+standard. Note this knob is **training-time only** — it cannot change an existing checkpoint.
+
+Our `sigma = 1` is noise, matching openpi's `x_t = t * noise + (1 - t) * actions`, so pi0's
+bias direction carries over without a sign flip. Verified numerically against
+`torch.distributions.Beta(1.5, 1.0)` in `verify_cls_dp.py`: mean 0.596 vs 0.600, and 64.5% of
+mass above `sigma = 0.5` against uniform's 50%.
 
 Also expose `shift` (the SD3/Flux time-shift `sigma' = shift*sigma / (1 + (shift-1)*sigma)`) with
 default `1.0`, i.e. off. [CLS-DP-improvements.md](CLS-DP-improvements.md) section 4 already argues
@@ -391,9 +402,10 @@ Following the repo convention of two CPU-only suites.
 |---|---|---|
 | `sampler` (group) | `ddpm` | `flow` selects the FM policy and config block |
 | `action_space` (group) | `raw` | `latent` routes the flow through the chunk autoencoder |
-| `num_inference_steps` | 4 | Solver steps; sweepable at eval |
+| `num_inference_steps` | 30 | Solver steps; sweepable at eval. Was 4; raised because 30 is the only measured setting that beats Study B — see section 10 |
 | `solver` | `euler` | or `midpoint` / `heun` (2nd order) |
-| `sigma_dist` | `uniform` | or `logit_normal`, `beta` |
+| `sigma_dist` | `beta` (1.5) | pi0's Beta(1.5, 1). Or `uniform`, `logit_normal`. Training-time only |
+| `clamp_x1` | 1.0 | Bounds the implied clean sample every step; the flow analogue of DDPM `clip_sample`. `null` disables; auto-dropped under `action_space=latent` |
 | `sigma_min` | `1e-4` | Training-only floor; inference still ends at 0 |
 | `shift` | 1.0 | SD3-style time shift; 1.0 = off |
 | `timestep_scale` | 1000.0 | Scales sigma before `SinusoidalPosEmb`. Do not lower |
@@ -402,7 +414,60 @@ Following the repo convention of two CPU-only suites.
 
 ---
 
-## 10. Sequencing
+## 10. Results: the step-count sweep
+
+First FM checkpoint (`*_clsdpfm_*`, Study B Stage 1 prior, `sigma_dist=uniform`,
+`tc_weight=0`, raw action space), LiftBarrier. **Same weights at every row — only the Euler
+step count changes:**
+
+| Euler steps | 4 | 8 | 12 | 24 | 30 |
+|---|---|---|---|---|---|
+| Success | 20% | 28% | 40% | 60% | 67% |
+
+Study B's 100-step DDPM baseline is **61%**.
+
+Read that carefully, because it inverts the obvious conclusion. The flow head is not worse
+than the baseline; at 30 steps it is **better**, with 3.3x fewer network evaluations. What
+fails at 4 steps is the ODE discretization, not the model.
+
+Two earlier hypotheses are dead, and the measurements that killed them are worth keeping:
+
+- **Not underfitting.** On 305 held-out samples the FM checkpoint's action MSE is 0.000229
+  against FG's 0.000556 and DET's 0.000183, while their success rates are 23% / 55% / 49%.
+  Per-step validation MSE is uncorrelated with rollout success across all three, so it is not
+  a useful model-selection metric here.
+- **Not mode averaging.** The under-committed gripper (58.2% of predictions at `|x| > 0.99`
+  against ground truth's 70.3%) looked like the classic averaging signature, and standard
+  flow matching genuinely does suffer from it (see VFP, LAFM). But mode averaging is a
+  property of the learned field and cannot be integrated away — a symptom that disappears
+  with more solver steps is a solver problem.
+- **Not jitter.** Mean `|Δaction|` is 0.00685 for FM against 0.00850 ground truth, closer
+  than FG's over-smoothed 0.00540.
+
+The remaining question is therefore narrow and much more tractable: **how do we buy the
+accuracy of 30 Euler steps for the cost of 4?** Three levers, in increasing cost:
+
+1. **Higher-order solver** — `solver=heun` or `midpoint`, already implemented, no retraining.
+   Heun is 2nd-order at 2 NFE per step, so 12 Heun steps (23 NFE) against 24 Euler steps
+   (24 NFE) is a matched-budget comparison. If the error is discretization, Heun should win
+   outright. Cheapest possible test and it should be run first.
+2. **Straighter paths at training time** — `sigma_dist=beta` (now the default). Uniform
+   undertrains the high-sigma half of the path, which is exactly where a few-step solver
+   takes its largest and least recoverable steps. Needs one retrain, which is Study FM-v2
+   (`train_study_fm_v2.sh`, Stage 2 only on Study B's existing priors, `*_clsdpfmv2_*`).
+   Judge it on the step curve against the table above, not on the 30-step number alone: a
+   curve that only catches up at 30 means the schedule bought nothing for integrability.
+3. **Reflow / distillation, or MeanFlow** — the actual literature answer for 1-4 step
+   policies (MP1, DM1, OMP, HybridFlow). Real work, only worth it if 1 and 2 stall.
+
+`clamp_x1=1.0` (section 9) is defensive rather than curative: at 4 steps 5.1% of predictions
+left `[-1, 1]` with a max of 1.033, against exactly 0% for both DDPM variants, which get it
+free from `clip_sample=True`. That overshoot is itself a discretization symptom and should
+shrink on its own as the solver improves.
+
+---
+
+## 11. Sequencing
 
 1. Tag refactor plus the `sampler` group, with `sampler=ddpm` proven identical to today. No
    behavior change, fully covered by the existing pipeline assertions.
@@ -419,13 +484,15 @@ be recorded as owed before any writeup.
 
 ---
 
-## 11. Open questions
+## 12. Open questions
 
 1. **Does success move at all?** Flow matching is a latency change, not obviously a capability
    change. A flat result at 25x fewer model calls is already a good outcome; state that as the
    hypothesis up front rather than hunting for an accuracy story afterwards.
-2. **How many steps are enough?** Only the sweep answers it. 4 is a guess anchored on published
-   flow policies, not on this task.
+2. ~~**How many steps are enough?**~~ **Answered, section 10.** Roughly 30 for Euler, where the
+   head beats the 100-step DDPM baseline. 4 was a guess anchored on published flow policies and
+   it does not transfer to this task. The live question is now how to buy 30-step accuracy at a
+   4-step budget.
 3. **Does removing 100-step stochasticity interact with the latent?** Each agent already samples
    `z` independently, which improvements-doc weakness W3 flags as a coordination failure mode.
    Fewer sampler steps means less action-level noise on top of that. This variant composes with

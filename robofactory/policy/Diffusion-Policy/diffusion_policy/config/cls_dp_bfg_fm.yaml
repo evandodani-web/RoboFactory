@@ -1,0 +1,27 @@
+# CLS-DP Stage 2, Study B + FACTORIZED latent + FLOW MATCHING ("Study B-FG-FM").
+#
+# Convenience alias. Composition-identical to
+#   python train.py --config-name=cls_dp_bfg.yaml sampler=flow
+# and kept as a file only so the study script and the docs can name it.
+#
+# Deliberately NOT built on DET. Study FG stacked factorization on Study DET's
+# deterministic latent and DET alone cost 12 points (61% -> 49%), which made Study FG's 55%
+# uninterpretable. This variant keeps Study B's stochastic CVAE and changes two things that
+# were each measured on their own:
+#   factorization  -> Study B-FG   (cls_dp_bfg,  DDPM head)
+#   flow matching  -> Study FM     (cls_dp + sampler=flow, 67% at 30 steps vs Study B's 61%)
+#
+# Both Stage 2 heads read the SAME Stage 1 prior (*_ctxbfg_*): factorization lives entirely
+# in Stage 1 and the sampler lives entirely in Stage 2, so one Stage 1 run serves both arms
+# and the DDPM control costs only its own Stage 2. Run both or the result is not
+# attributable -- see train_study_bfg.sh.
+#
+# Inherits the current flow defaults: Beta(1.5, 1) sigma, clamp_x1=1.0, 30 Euler steps.
+# Checkpoints land under *_clsdpbfgfm_*, distinct from *_clsdpbfg_* (DDPM arm) and
+# *_clsdpfgfm_* (the DET-based Study FG lineage).
+defaults:
+  - cls_dp_bfg
+  - override /sampler: flow
+  - _self_
+
+name: cls_dp_bfg_fm

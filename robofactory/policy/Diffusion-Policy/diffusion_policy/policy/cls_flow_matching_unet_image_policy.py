@@ -49,11 +49,11 @@ class CLSFlowMatchingUnetImagePolicy(CLSDiffusionUnetImagePolicy):
     def __init__(
         self,
         *,
-        num_inference_steps: int = 4,
+        num_inference_steps: int = 30,
         solver: str = "euler",
-        sigma_dist: str = "uniform",
+        sigma_dist: str = "beta",
         sigma_dist_loc: float = 0.0,
-        sigma_dist_scale: float = 1.0,
+        sigma_dist_scale: Optional[float] = None,
         shift: float = 1.0,
         timestep_scale: float = 1000.0,
         temporal_consistency_weight: float = 0.0,
@@ -61,6 +61,7 @@ class CLSFlowMatchingUnetImagePolicy(CLSDiffusionUnetImagePolicy):
         action_autoencoder: Optional[nn.Module] = None,
         action_ae_ckpt: Optional[str] = None,
         sigma_min: float = 1e-4,
+        clamp_x1: Optional[float] = 1.0,
         **kwargs,
     ):
         if num_inference_steps is None:
@@ -76,6 +77,19 @@ class CLSFlowMatchingUnetImagePolicy(CLSDiffusionUnetImagePolicy):
         kwargs.setdefault("noise_scheduler", None)
         super().__init__(num_inference_steps=num_inference_steps, **kwargs)
 
+        # The clamp bounds the implied clean sample, so it is only meaningful in a space
+        # that is actually bounded. Normalized joint actions are: LinearNormalizer's range
+        # fit puts them in [-1, 1], which is the same premise the DDPM head's
+        # clip_sample=True rests on. A learned action latent carries no such guarantee, so
+        # truncating it there would clip the autoencoder's code space rather than the
+        # action space.
+        if action_autoencoder is not None and clamp_x1 is not None:
+            print(
+                f"action_space=latent: dropping clamp_x1={clamp_x1}. The flow runs in the "
+                "autoencoder's code space, which is not bounded to [-1, 1]."
+            )
+            clamp_x1 = None
+
         self.transport = RectifiedFlowTransport(
             sigma_dist=sigma_dist,
             sigma_dist_loc=sigma_dist_loc,
@@ -84,6 +98,7 @@ class CLSFlowMatchingUnetImagePolicy(CLSDiffusionUnetImagePolicy):
             timestep_scale=timestep_scale,
             solver=solver,
             sigma_min=sigma_min,
+            clamp_x1=clamp_x1,
         )
         self.temporal_consistency_weight = temporal_consistency_weight
         self.tc_space = tc_space

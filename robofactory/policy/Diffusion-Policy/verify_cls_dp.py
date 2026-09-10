@@ -365,7 +365,10 @@ def main():
     check("stop-grad probe does not change CVAE gradients", mismatched == 0 and compared > 0)
 
     print("\n[9] Flow-matching transport + sampler correctness")
-    from diffusion_policy.model.cls.flow_matching import RectifiedFlowTransport
+    from diffusion_policy.model.cls.flow_matching import (
+        SOLVERS,
+        RectifiedFlowTransport,
+    )
     from diffusion_policy.model.diffusion.positional_embedding import SinusoidalPosEmb
     from diffusion_policy.policy.cls_flow_matching_unet_image_policy import (
         CLSFlowMatchingUnetImagePolicy,
@@ -420,9 +423,11 @@ def main():
         mo = model(x_ref, t)
         x_ref = ref.step(mo, t, x_ref).prev_sample
 
-    # ours loop
+    # ours loop. diffusers' scheduler has no clean-sample clamp, so the oracle comparison
+    # is against clamp_x1=None; the clamp is checked separately below.
+    unclamped = RectifiedFlowTransport(timestep_scale=1000.0, clamp_x1=None)
     torch.manual_seed(0)
-    x_ours = transport.sample(
+    x_ours = unclamped.sample(
         model_fn=lambda x, t_model: model(x, t_model),
         shape=x1.shape,
         num_steps=N_STEPS,
@@ -431,6 +436,50 @@ def main():
         noise=eps,
     )
     check("Euler sampling matches diffusers", torch.allclose(x_ours, x_ref, atol=1e-6))
+
+    # --- clean-sample clamp (the flow analogue of DDPM clip_sample=True)
+    check("clamp_x1 defaults to 1.0", transport.clamp_x1 == 1.0)
+
+    # step_to must be the plain Euler step whenever the clamp is inactive, so that turning
+    # the clamp on is the only behavioural difference and not a rewrite of the solver.
+    v_probe = torch.randn_like(x1)
+    s_a, s_b = torch.tensor(0.8), torch.tensor(0.3)
+    check(
+        "step_to with clamp off == x + (sigma_next - sigma) * v",
+        torch.allclose(
+            unclamped.step_to(x1, s_a, s_b, v_probe),
+            x1 + (s_b - s_a) * v_probe,
+            atol=1e-6,
+        ),
+    )
+
+    # A velocity this large drives the implied x1 far outside [-1, 1] at every step, so the
+    # clamp has to be what bounds the output rather than the model happening to behave.
+    blowup = lambda x, t_model: 5.0 * torch.ones_like(x)
+    x_clamped = transport.sample(
+        blowup, shape=x1.shape, num_steps=N_STEPS, device=x1.device,
+        dtype=x1.dtype, noise=eps,
+    )
+    x_free = unclamped.sample(
+        blowup, shape=x1.shape, num_steps=N_STEPS, device=x1.device,
+        dtype=x1.dtype, noise=eps,
+    )
+    print(f"       max|x| clamped {float(x_clamped.abs().max()):.3f} "
+          f"vs unclamped {float(x_free.abs().max()):.3f}")
+    check("clamped sample stays in [-1, 1]",
+          float(x_clamped.abs().max()) <= 1.0 + 1e-6)
+    check("the same run is out of range without the clamp",
+          float(x_free.abs().max()) > 1.0)
+    for solver in SOLVERS:
+        clamped_solver = RectifiedFlowTransport(
+            solver=solver, timestep_scale=1000.0, clamp_x1=1.0
+        )
+        out = clamped_solver.sample(
+            blowup, shape=x1.shape, num_steps=N_STEPS, device=x1.device,
+            dtype=x1.dtype, noise=eps,
+        )
+        check(f"clamp holds under solver={solver}",
+              float(out.abs().max()) <= 1.0 + 1e-6)
 
     # --- model-call count in the full policy path
     class DummyObsEncoder(torch.nn.Module):
@@ -563,6 +612,25 @@ def main():
           float(sampled.min()) >= transport.sigma_min - 1e-7)
     check("training sigma stays in (0, 1]",
           float(sampled.max()) <= 1.0 + 1e-7)
+
+    # --- default sigma distribution is pi0's Beta(1.5, 1.0)
+    check("sigma_dist defaults to beta(1.5)",
+          transport.sigma_dist == "beta" and transport.sigma_dist_scale == 1.5)
+    ref_beta = torch.distributions.Beta(
+        torch.tensor(1.5), torch.tensor(1.0)
+    ).sample((200000,))
+    print(f"       sigma mean ours {float(sampled.mean()):.4f} vs "
+          f"torch Beta(1.5,1) {float(ref_beta.mean()):.4f}; "
+          f"frac>0.5 = {float((sampled > 0.5).float().mean()):.3f} (uniform would be 0.5)")
+    check("default sigma matches Beta(1.5, 1.0)",
+          abs(float(sampled.mean()) - float(ref_beta.mean())) < 0.01)
+    # The whole point of the switch: more mass on the high-sigma half of the path.
+    check("default sigma favours high noise over uniform",
+          float((sampled > 0.5).float().mean()) > 0.6)
+    check(
+        "logit_normal keeps its own scale default of 1.0",
+        RectifiedFlowTransport(sigma_dist="logit_normal").sigma_dist_scale == 1.0,
+    )
 
     # --- Heun model-call count: 2 per step except the last (which is Euler)
     heun = RectifiedFlowTransport(solver="heun", timestep_scale=1000.0)

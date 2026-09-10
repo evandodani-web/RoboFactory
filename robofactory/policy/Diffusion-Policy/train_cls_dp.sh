@@ -19,6 +19,10 @@
 # Requires Stage 1 to have been trained for this same agent first.
 set -euo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib_ckpt_guard.sh
+source "${SCRIPT_DIR}/lib_ckpt_guard.sh"
+
 task_name=${1}
 load_num=${2}
 agent_id=${3}
@@ -54,9 +58,22 @@ if [ ! -f "${ctx_ckpt}" ]; then
     exit 1
 fi
 
+# Stage 2 finals share the repo-level checkpoints/ tree, so a re-run that composes to an
+# existing tag overwrites that study's result in place. Study FM's *_clsdpfm_* is the live
+# example: re-running it with today's flow defaults would destroy the checkpoint behind the
+# 67% number. Give the new run its own tag instead, e.g. run_tag=v2 -> *_clsdpfmv2_*.
+stage2_ckpt_name=$(resolve_checkpoint_name \
+    "${SCRIPT_DIR}/diffusion_policy/config" "${config_name}" \
+    "${sampler_args[@]}" \
+    "task_name=${task_name}" "agent_id=${agent_id}" \
+    "n_agents=${n_agents}" "data_num=${load_num}" "${@:8}")
+refuse_overwrite_ckpt \
+    "checkpoints/${stage2_ckpt_name}/100.ckpt" "Stage 2 (${stage2_ckpt_name})"
+
 head_label="${SAMPLER:-config-default}"
 echo -e "\033[33mgpu id (to use): ${gpu_id}\033[0m"
 echo -e "\033[33mStage 2 action-expert | ${task_name} agent ${agent_id}/${n_agents} | config=${config_name} sampler=${head_label}\033[0m"
+echo -e "\033[33mwrites: checkpoints/${stage2_ckpt_name}/\033[0m"
 echo -e "\033[33mfrozen prior: ${ctx_ckpt}\033[0m"
 
 export HYDRA_FULL_ERROR=1

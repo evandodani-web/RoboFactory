@@ -810,25 +810,110 @@ The axes compose independently via Hydra groups (`sampler`, `action_space`, `hor
 `horizon=h8` is the default and keeps the checkpoint names above unchanged.
 `horizon=h25` appends `h25` and must train its own Stage 1 (`time_embed` is length 25).
 
-### Study B-FG — Study B + factorized latent (built, not yet trained)
+### Study FM-v2 — Study FM under the current flow defaults (built, not yet trained)
+
+Stage 2 only. The flow head lives entirely in Stage 2, so this reuses Study B's `*_ctx_*`
+priors untouched and changes exactly one trainable thing.
+
+| | Study FM | Study FM-v2 |
+|---|---|---|
+| `sigma_dist` | `uniform` | **Beta(1.5, 1.0)** |
+| `clamp_x1` | none | 1.0 |
+| default steps | 4 | 30 |
+
+Only `sigma_dist` needs retraining — clamp and step count are inference knobs already
+measurable on the old checkpoint. So the run isolates one question: does pi0's
+high-noise-biased timestep distribution produce a field that integrates better at low step
+counts? The answer is in the step curve, not the headline number; Study FM's was
+20/28/40/60/67% at 4/8/12/24/30 steps.
+
+| Knob | Value |
+|---|---|
+| Stage 1 | none — reuses Study B's `*_ctx_*` |
+| Stage 2 | `cls_dp.yaml sampler=flow run_tag=v2` -> `*_clsdpfmv2_*` |
+| Pipeline | `train_study_fm_v2.sh` |
+| Eval | `eval_cls_sweep.sh ... 250 clsdpfmv2` |
+
+`run_tag=v2` is load-bearing. The axis tags describe the *configuration*, and today's flow
+defaults still compose to `clsdpfm`, so without it this run would overwrite the checkpoint
+behind the 67% in place. `train_cls_dp.sh` now refuses that (see **Checkpoint guards**),
+but the tag is what makes the run correct rather than merely blocked.
+
+### Study B-FG — Study B + factorized latent, both Stage 2 heads (built, not yet trained)
 
 Clean factorization ablation against Study B: same stochastic CVAE, Adam, 14x14 SigLIP,
 and 150 LiftBarrier demos; only the latent is split into `z_self` / `z_team` with separate
-decoders (residual on `z_team` only). Unlike Study FG, this does **not** inherit DET.
+decoders (residual on `z_team` only). Unlike Study FG, this does **not** inherit DET —
+DET alone cost 12 points, which is precisely what made Study FG's 55% unreadable.
 
 | Knob | Value |
 |---|---|
 | Latent | Study B stochastic prior + FG split (`z_self` 128 / `z_team` 128) |
 | Deterministic | **false** (learned `sigma`; standard KL) |
 | Probes | `prior_probe` + `leak_probe`, both stop-gradiented |
-| Configs | `cls_stage1_bfg.yaml`, `cls_dp_bfg.yaml` |
-| Checkpoints | `checkpoints/LiftBarrier-rf_{ctxbfg,clsdpbfg}_Agent{0,1}_150/` |
-| Pipeline | `policy/Diffusion-Policy/train_study_bfg.sh` |
-| Eval | `eval_cls_sweep.sh ... clsdpbfg` |
+| Stage 1 | `cls_stage1_bfg.yaml` -> `*_ctxbfg_*`, shared by both heads |
+| Stage 2 | `cls_dp_bfg.yaml` + `SAMPLER` -> `*_clsdpbfg_*` (ddpm) / `*_clsdpbfgfm_*` (flow) |
+| Alias | `cls_dp_bfg_fm.yaml` == `cls_dp_bfg.yaml sampler=flow` |
+| Pipeline | `train_study_bfg.sh`, `SAMPLER=flow train_study_bfg.sh` |
+| Eval | `eval_cls_sweep.sh ... clsdpbfg` / `... clsdpbfgfm` |
 
-Does not overwrite Study FG's `*_ctxfg_*` / `*_clsdpfg_*`. Watch the leak probe: if it
-still says `NOT SEPARATED`, treat any success-rate delta as weak evidence that the split
-is doing real work.
+Does not overwrite Study FG's `*_ctxfg_*` / `*_clsdpfg_*`, nor the DET-based
+`*_clsdpfgfm_*`. Watch the leak probe: if it still says `NOT SEPARATED`, treat any
+success-rate delta as weak evidence that the split is doing real work.
+
+**Run both heads, not just the flow one.** Factorization lives entirely in Stage 1 and the
+sampler entirely in Stage 2, so one Stage 1 run feeds both arms and the DDPM control costs
+only its own Stage 2 — the script skips Stage 1 when `*_ctxbfg_*` already exists. That
+completes a 2x2 in which each change is separately attributable:
+
+| | DDPM | flow (30 steps) |
+|---|---|---|
+| monolithic | Study B **61%** | Study FM **67%** |
+| factorized | `clsdpbfg` ? | `clsdpbfgfm` ? |
+
+One caveat to record before reading the result: Study FM's 67% was trained under the old
+`sigma_dist=uniform`, while anything trained now gets Beta(1.5, 1), so the top-right cell is
+a stale control. Study FM-v2 above refreshes it as a Stage-2-only run.
+
+#### Study B-FG-FM-H25 — the full stack
+
+`HORIZON=h25` moves both stages to 25-step chunks, giving everything that has looked good so
+far at once: Study B's stochastic CVAE, the factorized latent, the flow head, and long
+chunks.
+
+| Knob | Value |
+|---|---|
+| Stage 1 | `cls_stage1_bfg.yaml horizon=h25` -> `*_ctxbfgh25_*` |
+| Stage 2 | `cls_dp_bfg.yaml sampler=flow horizon=h25` -> `*_clsdpbfgfmh25_*` |
+| Pipeline | `SAMPLER=flow HORIZON=h25 train_study_bfg.sh` |
+| Executed slice | 23 (`25 - n_obs_steps + 1`); `n_exec_steps=6` for receding horizon |
+| Eval | `eval_cls_sweep.sh ... 65 clsdpbfgfmh25` — `max_steps=65` holds the env-step budget equal to Study B's 250 x 6 |
+
+Stage 1 depends on the horizon (it reconstructs `n_future_states`) but not on the sampler,
+so priors are shared across `SAMPLER` and separate across `HORIZON`.
+
+This moves three things at once against Study B, so it answers "is the combination the best
+policy we have", not "which part did the work". That is a deliberate trade: Study FG showed
+factorization gaining 6 points even on DET's weaker base, and Study FM already beats Study B
+on its own, so both components have independent support. The `SAMPLER=ddpm HORIZON=h8` arm
+is still the only run that isolates the split, and it is cheap once `*_ctxbfg_*` exists.
+
+### Checkpoint guards
+
+Stage 2 finals land in the shared repo-level `checkpoints/${checkpoint_name}/` tree, not the
+timestamped Hydra run dir, so two runs composing to the same tag overwrite each other in
+place. Both stages now refuse that, and both derive the guarded path by asking Hydra to
+compose the config rather than consulting a tag table:
+
+- The old Stage 1 table keyed off `CONFIG_NAME` alone, so a bare `horizon=h25` override
+  guarded `*_ctx_*` while writing `*_ctxh25_*` — the wrong path protected, and a spurious
+  refusal on the right one. Required for Study B-FG-FM-H25 to be safe at all.
+- Stage 2 had no guard whatsoever. Re-running Study FM would have silently destroyed the
+  checkpoint behind the 67%.
+
+Override with `FORCE_OVERWRITE_CKPT=1` (the older Stage-1-only `FORCE_OVERWRITE_CTX=1` still
+works). Resume is unaffected: it reads the Hydra run dir, so the guard never blocks resuming
+an interrupted run.
 
 ### Study B-H25 — Study B + 25-step chunks (built, not yet trained)
 

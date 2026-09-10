@@ -1,8 +1,8 @@
 # @package _global_
 #
 # Flow-matching (rectified-flow / conditional-OT) head. Same U-Net, same conditioning, same
-# z cross-attention; only the transport between noise and actions changes. ~4 model calls
-# instead of 100.
+# z cross-attention; only the transport between noise and actions changes. 30 model calls
+# instead of 100, at a higher success rate -- see num_inference_steps below.
 #
 # Select with `sampler=flow`. Composes with any latent variant:
 #   python train.py --config-name=cls_dp.yaml     sampler=flow    -> clsdpfm
@@ -21,7 +21,18 @@ policy:
 
   # Euler steps from sigma=1 (noise) to sigma=0 (data). Sweepable at eval without
   # retraining via eval_multi_cls_dp.py --num-inference-steps.
-  num_inference_steps: 4
+  #
+  # 30, not the 4 this variant was designed around. Measured on LiftBarrier with the
+  # uniform-sigma checkpoint, same weights throughout:
+  #     steps   4     8     12    24    30
+  #     SR      20%   28%   40%   60%   67%
+  # Study B's 100-step DDPM gets 61%, so the flow field is fine and in fact better than the
+  # baseline -- what failed at 4 steps was ODE discretization, not the fit. 30 is the only
+  # measured setting that beats Study B, and it still costs 3.3x fewer model calls.
+  #
+  # Lower this only with a matching eval number in hand. The open work is buying 30-step
+  # accuracy at a smaller budget: solver=heun first (free), then a beta-sigma retrain.
+  num_inference_steps: 30
 
   # euler: 1 model call per step. midpoint: 2 calls, second-order.
   # heun: improved Euler (EDM / k-diffusion); 2 calls except the last step.
@@ -32,12 +43,32 @@ policy:
   # on the data manifold.
   sigma_min: 1.0e-4
 
-  # How sigma is drawn during training. uniform adds no tuning axis, which keeps the first
-  # run a clean DDPM-to-flow swap. logit_normal (SD3) concentrates on mid-sigma; beta (pi0)
-  # emphasises high noise.
-  sigma_dist: uniform
+  # How sigma is drawn during training. Training-time only: changing this has no effect on
+  # an already-trained checkpoint.
+  #
+  # beta + scale 1.5 is Beta(1.5, 1.0), what pi0, pi0.5, SmolVLA, GR00T and WALL-X all use.
+  # It puts ~65% of the mass above sigma=0.5 against uniform's 50%. That matters because
+  # the measured failure of this head is discretization error, not fit: the same checkpoint
+  # walks 20% -> 28% -> 40% -> 60% -> 67% as Euler steps go 4 -> 8 -> 12 -> 24 -> 30. The
+  # high-sigma half is where a few-step solver takes its largest and least recoverable
+  # steps, so that is where the field needs to be most accurate.
+  #
+  # Alternatives: uniform is the untuned baseline the first FM run used; logit_normal (SD3)
+  # concentrates on mid-sigma instead, and wants sigma_dist_scale back at 1.0.
+  sigma_dist: beta
   sigma_dist_loc: 0.0
-  sigma_dist_scale: 1.0
+  sigma_dist_scale: 1.5
+
+  # Bound on the implied clean sample |x1_hat|, applied at every solver step -- the flow
+  # analogue of the DDPM head's clip_sample=True, which Study B ran with. Normalized
+  # actions live in [-1, 1], so this costs nothing when the solver is already accurate and
+  # bounds the overshoot when it is not: at 4 steps 5.1% of predictions left [-1, 1]
+  # (max 1.033), against exactly 0% for both DDPM variants.
+  #
+  # Unlike sigma_dist this is an inference-time knob, so it applies to existing
+  # checkpoints. Set to null to disable; it is dropped automatically under
+  # action_space=latent, where the flow runs in an unbounded code space.
+  clamp_x1: 1.0
 
   # SD3/Flux time shift, sigma' = shift*sigma / (1 + (shift-1)*sigma). 1.0 disables it.
   # CLS-DP-improvements.md section 4 argues the optimal shift here is ~0 because the action

@@ -840,6 +840,92 @@ def test_factorized_variant(workdir, zarr_path):
     check("B-FG Stage 2 is not the DET/FG head chain",
           "det" not in cfg_bfg2.checkpoint_name and "fg" != str(cfg_bfg2.latent_tag))
 
+    # Study B-FG-FM: the same factorized stochastic prior with the flow head instead.
+    # Factorization is a Stage 1 property and the sampler a Stage 2 one, so both arms must
+    # come off one *_ctxbfg_* prior while landing on different Stage 2 tags.
+    cfg_bfgfm = load_cfg("cls_dp_bfg", zarr_path, ["sampler=flow"])
+    check("B-FG+flow Stage 2 tag is clsdpbfgfm",
+          cfg_bfgfm.checkpoint_name == f"{TASK}_clsdpbfgfm_Agent0_{N_EPISODES}",
+          cfg_bfgfm.checkpoint_name)
+    check("B-FG+flow selects the flow head",
+          cfg_bfgfm.policy._target_.endswith("CLSFlowMatchingUnetImagePolicy"))
+    check("B-FG+flow keeps the stochastic latent (no DET inheritance)",
+          cfg_bfgfm.policy.latent_sample is True
+          and cfg_bfgfm.policy.prior_net.get("deterministic", False) is False
+          and "det" not in cfg_bfgfm.checkpoint_name)
+    check("B-FG+flow inherits the current flow defaults",
+          cfg_bfgfm.policy.sigma_dist == "beta"
+          and cfg_bfgfm.policy.sigma_dist_scale == 1.5
+          and cfg_bfgfm.policy.clamp_x1 == 1.0
+          and cfg_bfgfm.policy.num_inference_steps == 30,
+          f"sigma={cfg_bfgfm.policy.sigma_dist}/{cfg_bfgfm.policy.sigma_dist_scale} "
+          f"clamp={cfg_bfgfm.policy.clamp_x1} steps={cfg_bfgfm.policy.num_inference_steps}")
+    check("B-FG DDPM and flow arms are distinct checkpoints",
+          cfg_bfg2.checkpoint_name != cfg_bfgfm.checkpoint_name)
+    # The whole point of the 2x2: one Stage 1 run feeds both Stage 2 heads.
+    check("both B-FG arms pair with the same ctxbfg prior",
+          cfg_bfg2.latent_tag == cfg_bfgfm.latent_tag == "bfg")
+    cfg_bfgfm_alias = load_cfg("cls_dp_bfg_fm", zarr_path, [])
+    check("cls_dp_bfg_fm alias matches cls_dp_bfg sampler=flow",
+          cfg_bfgfm_alias.checkpoint_name == cfg_bfgfm.checkpoint_name
+          and cfg_bfgfm_alias.policy._target_ == cfg_bfgfm.policy._target_
+          and cfg_bfgfm_alias.policy.num_inference_steps
+          == cfg_bfgfm.policy.num_inference_steps)
+    # Study FG's DET lineage must stay reachable and stay separate on disk.
+    cfg_fgfm = load_cfg("cls_dp_fg", zarr_path, ["sampler=flow"])
+    check("DET-based FG+flow keeps its own tag",
+          cfg_fgfm.checkpoint_name == f"{TASK}_clsdpfgfm_Agent0_{N_EPISODES}"
+          and cfg_fgfm.checkpoint_name != cfg_bfgfm.checkpoint_name,
+          f"{cfg_fgfm.checkpoint_name} vs {cfg_bfgfm.checkpoint_name}")
+
+    # --- Study B-FG-FM-H25: factorized + stochastic + flow + 25-step chunks.
+    # The tags the study scripts hardcode in shell are cross-checked against what Hydra
+    # actually composes, since a mismatch would guard or skip the wrong checkpoint.
+    cfg_s1_h25 = load_cfg("cls_stage1_bfg", zarr_path, ["horizon=h25"])
+    check("B-FG Stage 1 at h25 gets its own ctx tag",
+          cfg_s1_h25.checkpoint_name == f"{TASK}_ctxbfgh25_Agent0_{N_EPISODES}",
+          cfg_s1_h25.checkpoint_name)
+    check("B-FG Stage 1 at h25 keeps factorized + stochastic",
+          cfg_s1_h25.contextualizer.factorize is True
+          and cfg_s1_h25.contextualizer.deterministic is False
+          and cfg_s1_h25.n_future_states == 25)
+    cfg_bfgfmh25 = load_cfg("cls_dp_bfg", zarr_path, ["sampler=flow", "horizon=h25"])
+    check("B-FG+flow+h25 Stage 2 tag is clsdpbfgfmh25",
+          cfg_bfgfmh25.checkpoint_name == f"{TASK}_clsdpbfgfmh25_Agent0_{N_EPISODES}",
+          cfg_bfgfmh25.checkpoint_name)
+    check("B-FG+flow+h25 stacks all four properties",
+          cfg_bfgfmh25.policy._target_.endswith("CLSFlowMatchingUnetImagePolicy")
+          and cfg_bfgfmh25.policy.horizon == 25
+          and cfg_bfgfmh25.policy.latent_sample is True
+          and cfg_bfgfmh25.latent_tag == "bfg"
+          and cfg_bfgfmh25.policy.sigma_dist == "beta"
+          and cfg_bfgfmh25.policy.clamp_x1 == 1.0)
+    check("B-FG+flow+h25 executed slice is 23",
+          cfg_bfgfmh25.policy.n_exec_steps == 23,
+          str(cfg_bfgfmh25.policy.n_exec_steps))
+    check("B-FG DDPM arm at h25 is a distinct tag",
+          load_cfg("cls_dp_bfg", zarr_path, ["horizon=h25"]).checkpoint_name
+          == f"{TASK}_clsdpbfgh25_Agent0_{N_EPISODES}")
+
+    # --- Study FM-v2: run_tag keeps a re-run from overwriting the study it re-runs.
+    check("run_tag defaults to empty so existing tags are unchanged",
+          load_cfg("cls_dp", zarr_path, ["sampler=flow"]).checkpoint_name
+          == f"{TASK}_clsdpfm_Agent0_{N_EPISODES}")
+    cfg_fmv2 = load_cfg("cls_dp", zarr_path, ["sampler=flow", "run_tag=v2"])
+    check("FM-v2 tag is clsdpfmv2",
+          cfg_fmv2.checkpoint_name == f"{TASK}_clsdpfmv2_Agent0_{N_EPISODES}",
+          cfg_fmv2.checkpoint_name)
+    check("FM-v2 does not collide with Study FM",
+          cfg_fmv2.checkpoint_name
+          != load_cfg("cls_dp", zarr_path, ["sampler=flow"]).checkpoint_name)
+    check("FM-v2 differs from Study FM only in transport config",
+          cfg_fmv2.policy.sigma_dist == "beta"
+          and cfg_fmv2.policy.sigma_dist_scale == 1.5
+          and cfg_fmv2.policy.clamp_x1 == 1.0
+          and cfg_fmv2.policy.num_inference_steps == 30
+          and cfg_fmv2.policy.horizon == 8
+          and cfg_fmv2.latent_tag == "")
+
     ws1 = ContextualizerWorkspace(cfg1, output_dir=os.path.join(workdir, "out_fg1"))
     check("monolithic decoder is not built when factorized", ws1.model.ma_decoder is None)
     check("both probes are attached",

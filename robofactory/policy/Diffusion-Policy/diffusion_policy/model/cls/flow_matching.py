@@ -18,6 +18,9 @@ Two identities fall out of the above and are asserted in the verification suite:
     x_sigma = sigma * v + x1        =>      x1 = x_sigma - sigma * v
 
 so a single Euler step from sigma=1 recovers exactly the model's implied clean prediction.
+The sampler is written through that identity -- `x <- x1_hat + sigma_next * v` -- which is
+algebraically the same Euler step but exposes the clean prediction, so `clamp_x1` can bound
+it the way the DDPM head's `clip_sample=True` bounds its own x0 estimate. See `step_to`.
 
 Why this is hand-rolled rather than delegated to diffusers, despite matching its
 conventions -- all three verified against the pinned diffusers==0.32.2 source:
@@ -33,10 +36,18 @@ conventions -- all three verified against the pinned diffusers==0.32.2 source:
 The reference implementation is therefore used as a test oracle, not as a dependency.
 """
 
+from typing import Optional
+
 import torch
 
 SIGMA_DISTRIBUTIONS = ("uniform", "logit_normal", "beta")
 SOLVERS = ("euler", "midpoint", "heun")
+
+# `sigma_dist_scale` means something different per distribution -- `a` in Beta(a, 1) versus
+# the std of the logit-normal -- so a single shared default would silently mis-tune whichever
+# one it was not chosen for. Left as None by the caller, each resolves to its field standard:
+# 1.5 is pi0/pi0.5/SmolVLA/GR00T's Beta(1.5, 1.0), 1.0 is SD3's logit-normal.
+DEFAULT_SIGMA_DIST_SCALE = {"uniform": 1.0, "logit_normal": 1.0, "beta": 1.5}
 
 
 class RectifiedFlowTransport:
@@ -48,13 +59,14 @@ class RectifiedFlowTransport:
 
     def __init__(
         self,
-        sigma_dist: str = "uniform",
+        sigma_dist: str = "beta",
         sigma_dist_loc: float = 0.0,
-        sigma_dist_scale: float = 1.0,
+        sigma_dist_scale: Optional[float] = None,
         shift: float = 1.0,
         timestep_scale: float = 1000.0,
         solver: str = "euler",
         sigma_min: float = 1e-4,
+        clamp_x1: Optional[float] = 1.0,
     ):
         if sigma_dist not in SIGMA_DISTRIBUTIONS:
             raise ValueError(
@@ -68,10 +80,14 @@ class RectifiedFlowTransport:
             raise ValueError(f"timestep_scale must be positive, got {timestep_scale}")
         if not 0.0 <= sigma_min < 1.0:
             raise ValueError(f"sigma_min must be in [0, 1), got {sigma_min}")
+        if sigma_dist_scale is None:
+            sigma_dist_scale = DEFAULT_SIGMA_DIST_SCALE[sigma_dist]
         if sigma_dist == "beta" and sigma_dist_scale <= 0:
             raise ValueError(
                 f"beta needs a positive sigma_dist_scale, got {sigma_dist_scale}"
             )
+        if clamp_x1 is not None and clamp_x1 <= 0:
+            raise ValueError(f"clamp_x1 must be positive or None, got {clamp_x1}")
 
         self.sigma_dist = sigma_dist
         self.sigma_dist_loc = sigma_dist_loc
@@ -80,6 +96,7 @@ class RectifiedFlowTransport:
         self.timestep_scale = timestep_scale
         self.solver = solver
         self.sigma_min = sigma_min
+        self.clamp_x1 = clamp_x1
 
     # ------------------------------------------------------------------ sigma
 
@@ -112,6 +129,13 @@ class RectifiedFlowTransport:
             # transform rather than torch.distributions keeps `generator` honoured, which
             # matters for the determinism checks. b is fixed at 1, which covers the
             # pi0-style "emphasise high noise" case (a > 1) that motivates this option.
+            #
+            # This is the default. a=1.5 reproduces the Beta(1.5, 1.0) that pi0, pi0.5,
+            # SmolVLA, GR00T and WALL-X all converged on; sigma=1 is noise here exactly as
+            # in openpi's `x_t = t * noise + (1 - t) * actions`, so the bias direction
+            # carries over without a flip. It puts ~65% of training mass above sigma=0.5
+            # against uniform's 50%, which is the half of the path a few-step solver
+            # crosses in its first, largest, and least recoverable steps.
             uniform = torch.rand(
                 batch_size, device=device, dtype=dtype, generator=generator
             )
@@ -170,6 +194,30 @@ class RectifiedFlowTransport:
 
     # -------------------------------------------------------------- reverse process
 
+    def step_to(self, x, sigma, sigma_target, velocity):
+        """Advance along the straight path from `sigma` to `sigma_target`.
+
+        Algebraically this is the plain Euler step, since
+
+            x1 + sigma_target * v = (x - sigma * v) + sigma_target * v
+                                  = x + (sigma_target - sigma) * v
+
+        but routing it through the implied clean sample is what lets `clamp_x1` bound the
+        *clean prediction* rather than the noisy iterate, which is what DDPM's
+        `clip_sample=True` does to its own x0 estimate. Two consequences worth knowing:
+
+          * The schedule ends at sigma_target = 0, so the last step returns the clamped x1
+            itself. A clamped sampler therefore cannot emit an out-of-range action.
+          * No division by sigma is involved, so this stays well defined as sigma -> 0.
+
+        With clamp_x1=None the arithmetic is bit-for-bit the previous implementation, which
+        is what the diffusers cross-check in verify_cls_dp.py pins.
+        """
+        x1 = x - sigma * velocity
+        if self.clamp_x1 is not None:
+            x1 = x1.clamp(-self.clamp_x1, self.clamp_x1)
+        return x1 + sigma_target * velocity
+
     def sample(
         self,
         model_fn,
@@ -207,26 +255,28 @@ class RectifiedFlowTransport:
 
             velocity = model_fn(x, self.to_model_timestep(ones * sigma))
             if self.solver == "euler":
-                x = x + d_sigma * velocity
+                x = self.step_to(x, sigma, sigma_next, velocity)
             elif self.solver == "midpoint":
                 # Midpoint: one extra model call buys second-order accuracy, which at very
                 # low step counts can beat spending the same calls on more Euler steps.
                 sigma_mid = sigma + 0.5 * d_sigma
-                x_mid = x + 0.5 * d_sigma * velocity
+                x_mid = self.step_to(x, sigma, sigma_mid, velocity)
                 velocity_mid = model_fn(
                     x_mid, self.to_model_timestep(ones * sigma_mid)
                 )
-                x = x + d_sigma * velocity_mid
+                x = self.step_to(x, sigma, sigma_next, velocity_mid)
             else:
                 # Heun / improved Euler: the 2-NFE method used by EDM and k-diffusion.
                 # Skip the correcting eval on the last step (sigma_next = 0); that step
                 # is already tiny (1/timestep_scale -> 0) and t=0 is not a training point.
-                x_euler = x + d_sigma * velocity
+                x_euler = self.step_to(x, sigma, sigma_next, velocity)
                 if i + 1 < num_steps:
                     velocity_next = model_fn(
                         x_euler, self.to_model_timestep(ones * sigma_next)
                     )
-                    x = x + d_sigma * 0.5 * (velocity + velocity_next)
+                    x = self.step_to(
+                        x, sigma, sigma_next, 0.5 * (velocity + velocity_next)
+                    )
                 else:
                     x = x_euler
 

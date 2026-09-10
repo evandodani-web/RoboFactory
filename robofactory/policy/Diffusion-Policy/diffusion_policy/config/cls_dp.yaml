@@ -29,12 +29,19 @@ stage: 2
 #   head_tag      sampler/flow -> "fm"
 #   space_tag     action_space/latent -> "la"
 #   horizon_tag   horizon/h25 -> "h25"
+#   run_tag       free-form, CLI only; distinguishes re-runs of an identical composition
 # All empty gives LiftBarrier-rf_clsdp_Agent0_150, unchanged from before the tags existed.
+#
+# run_tag exists because the axis tags describe the *configuration*, so retraining a study
+# under changed defaults composes to the byte-identical name and overwrites the old result.
+# Study FM is the case in point: today's flow defaults still compose to clsdpfm, so the
+# re-run is `run_tag=v2` -> *_clsdpfmv2_* and the original 67% checkpoint survives.
 latent_tag: ""
 head_tag: ""
 space_tag: ""
 horizon_tag: ""
-checkpoint_name: ${task_name}_clsdp${latent_tag}${head_tag}${space_tag}${horizon_tag}_Agent${agent_id}_${data_num}
+run_tag: ""
+checkpoint_name: ${task_name}_clsdp${latent_tag}${head_tag}${space_tag}${horizon_tag}${run_tag}_Agent${agent_id}_${data_num}
 # Frozen Stage 1 prior. Set by train_cls_dp.sh; leaving it null trains an untrained prior.
 contextualizer_ckpt: null
 # Frozen Stage 2a action autoencoder. Only read when action_space=latent.
