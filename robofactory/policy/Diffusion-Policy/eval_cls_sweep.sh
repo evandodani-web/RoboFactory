@@ -44,14 +44,19 @@ export MKL_NUM_THREADS=8
 
 STAMP=$(date +"%Y%m%d_%H%M%S")
 # Prefix and step count are part of the run dir so no two configurations overwrite.
-RUN_DIR="eval_results/${TASK_NAME}_${CKPT_PREFIX}${STEPS:+_s${STEPS}}_${DATA_NUM}_${CKPT}_${STAMP}"
-mkdir -p "${RUN_DIR}/logs" "${RUN_DIR}/timing"
+RUN_NAME="${TASK_NAME}_${CKPT_PREFIX}${STEPS:+_s${STEPS}}_${DATA_NUM}_${CKPT}_${STAMP}"
+RUN_DIR="eval_results/${RUN_NAME}"
+# Videos live under the already-gitignored eval_video/ tree, mirrored by run name so
+# sweeps stay organized without bloating eval_results/ (or the git index).
+VIDEO_DIR="eval_video/${RUN_NAME}"
+mkdir -p "${RUN_DIR}/logs" "${RUN_DIR}/timing" "${VIDEO_DIR}"
 RESULTS="${RUN_DIR}/results.csv"
 echo "seed,success" > "${RESULTS}"
 
 echo "task=${TASK_NAME} variant=${CKPT_PREFIX} data_num=${DATA_NUM} ckpt=${CKPT} max_steps=${MAX_STEPS} steps=${STEPS:-<from ckpt>}"
 echo "seeds ${SEED_START}..${SEED_END} across ${JOBS} parallel workers"
 echo "results -> ${RUN_DIR}"
+echo "videos  -> ${VIDEO_DIR}/"
 
 run_seed() {
     local seed=$1
@@ -78,7 +83,7 @@ run_seed() {
         --timing-json "${RUN_DIR}/timing/seed_${seed}.json" \
         "${steps_arg[@]}" \
         --quiet \
-        --record-dir "./eval_video/{env_id}" > "${log}" 2>&1
+        --record-dir "${VIDEO_DIR}/{env_id}" > "${log}" 2>&1
     set -e
 
     local last
@@ -92,7 +97,7 @@ run_seed() {
     echo "seed ${seed} -> ${ok}"
 }
 export -f run_seed
-export TASK_NAME CONFIG DATA_NUM CKPT REPO_ROOT RUN_DIR RESULTS MAX_STEPS CKPT_PREFIX STEPS
+export TASK_NAME CONFIG DATA_NUM CKPT REPO_ROOT RUN_DIR VIDEO_DIR RESULTS MAX_STEPS CKPT_PREFIX STEPS
 
 seq "${SEED_START}" "${SEED_END}" | xargs -P "${JOBS}" -I{} bash -c 'run_seed {}'
 

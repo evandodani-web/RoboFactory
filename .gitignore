@@ -5,7 +5,10 @@ robofactory/demos/
 assets/*
 robofactory/demos
 robofactory/data
-robofactory/eval_video
+# Eval rollouts: keep metrics under eval_results/, videos under eval_video/ (or
+# nested videos/ folders if a launcher co-locates them). Never commit mp4s.
+robofactory/eval_video/
+robofactory/eval_results/**/videos/
 robofactory/checkpoints
 
 

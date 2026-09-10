@@ -1,0 +1,7 @@
+task: LiftBarrier-rf
+variant: clsdpfg
+inference_steps: 4
+demos: 150  checkpoint: 100
+seeds: 1000..1024
+total: 25  success: 13  success_rate: 52.0%
+videos: eval_results/LiftBarrier-rf_clsdpfg_s4_150_100_20260909_121807/videos/
