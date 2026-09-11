@@ -182,14 +182,14 @@ the embedding is above a threshold when scaled and below it when not.
 
 ### Sigma sampling during training
 
-Originally defaulted to the least opinionated option so the first run was a clean swap. That
-first run is now done, and the default has moved to `beta` at scale 1.5 — see the step-count
-result in section 10:
+Defaults to the least opinionated option. It briefly moved to `beta` at scale 1.5 on the
+strength of the section 10 step-count result, then moved back when that retrain lost by 21
+points — see section 10.1.
 
 | `sigma_dist` | Draw | Notes |
 |---|---|---|
-| `beta` (default, scale 1.5) | Beta(1.5, 1) toward `sigma -> 1` | pi0/pi0.5/SmolVLA/GR00T/WALL-X all use exactly this |
-| `uniform` | `U(0, 1)` | The original "pure swap". What the first FM checkpoint trained with |
+| `uniform` (default) | `U(0, 1)` | What every FM checkpoint that has won here trained with |
+| `beta` (scale 1.5) | Beta(1.5, 1) toward `sigma -> 1` | pi0/pi0.5/SmolVLA/GR00T/WALL-X all use exactly this. Tried here, 46% vs 67% |
 | `logit_normal` | `sigmoid(m + s * randn)` | SD3's choice; concentrates on mid-sigma. Wants scale back at 1.0 |
 
 `sigma_dist_scale` means a different thing per distribution (`a` in Beta(a, 1) versus the
@@ -404,8 +404,8 @@ Following the repo convention of two CPU-only suites.
 | `action_space` (group) | `raw` | `latent` routes the flow through the chunk autoencoder |
 | `num_inference_steps` | 30 | Solver steps; sweepable at eval. Was 4; raised because 30 is the only measured setting that beats Study B — see section 10 |
 | `solver` | `euler` | or `midpoint` / `heun` (2nd order) |
-| `sigma_dist` | `beta` (1.5) | pi0's Beta(1.5, 1). Or `uniform`, `logit_normal`. Training-time only |
-| `clamp_x1` | 1.0 | Bounds the implied clean sample every step; the flow analogue of DDPM `clip_sample`. `null` disables; auto-dropped under `action_space=latent` |
+| `sigma_dist` | `uniform` | Or `beta` (pi0's Beta(1.5, 1), lost here), `logit_normal`. Training-time only — cannot be changed on an existing checkpoint |
+| `clamp_x1` | `null` | Bounds the implied clean sample every step; the flow analogue of DDPM `clip_sample`. Measured a no-op here (section 10.1). Auto-dropped under `action_space=latent` |
 | `sigma_min` | `1e-4` | Training-only floor; inference still ends at 0 |
 | `shift` | 1.0 | SD3-style time shift; 1.0 = off |
 | `timestep_scale` | 1000.0 | Scales sigma before `SinusoidalPosEmb`. Do not lower |
@@ -451,19 +451,93 @@ accuracy of 30 Euler steps for the cost of 4?** Three levers, in increasing cost
    Heun is 2nd-order at 2 NFE per step, so 12 Heun steps (23 NFE) against 24 Euler steps
    (24 NFE) is a matched-budget comparison. If the error is discretization, Heun should win
    outright. Cheapest possible test and it should be run first.
-2. **Straighter paths at training time** — `sigma_dist=beta` (now the default). Uniform
-   undertrains the high-sigma half of the path, which is exactly where a few-step solver
-   takes its largest and least recoverable steps. Needs one retrain, which is Study FM-v2
-   (`train_study_fm_v2.sh`, Stage 2 only on Study B's existing priors, `*_clsdpfmv2_*`).
-   Judge it on the step curve against the table above, not on the 30-step number alone: a
-   curve that only catches up at 30 means the schedule bought nothing for integrability.
+2. ~~**Straighter paths at training time** — `sigma_dist=beta`.~~ **Tried and rejected;
+   see section 10.1.** Study FM-v2 (`train_study_fm_v2.sh`) scored 46% against 67%.
+   `sigma_dist` reverted to `uniform`.
 3. **Reflow / distillation, or MeanFlow** — the actual literature answer for 1-4 step
    policies (MP1, DM1, OMP, HybridFlow). Real work, only worth it if 1 and 2 stall.
 
-`clamp_x1=1.0` (section 9) is defensive rather than curative: at 4 steps 5.1% of predictions
-left `[-1, 1]` with a max of 1.033, against exactly 0% for both DDPM variants, which get it
-free from `clip_sample=True`. That overshoot is itself a discretization symptom and should
-shrink on its own as the solver improves.
+`clamp_x1` (section 9) was defensive rather than curative, and turned out not to matter at
+all — see section 10.1. It is off by default.
+
+---
+
+## 10.1 Results: the Beta sigma experiment, and what it taught us about metrics
+
+Lever 2 above was wrong, and the way it was wrong is more useful than the result.
+
+Study FM-v2 is Stage 2 only on Study B's existing `*_ctx_*` priors, identical to Study FM
+except `sigma_dist=beta` with scale 1.5, i.e. Beta(1.5, 1.0) — what pi0, pi0.5, SmolVLA,
+GR00T and WALL-X all use. On the same 100 seeds at the same 30 Euler steps it scored **46%
+against Study FM's 67%**. That gap is about 3 sigma, so unlike most 50-seed comparisons in
+this project it is real.
+
+**Beta did exactly what it promises.** Velocity error on 305 held-out samples, paired (same
+data, same noise draws, same `z`), agent 0:
+
+| sigma | 0.99 | 0.75 | 0.50 | 0.25 | 0.10 | 0.02 |
+|---|---|---|---|---|---|---|
+| uniform | 0.00066 | 0.00090 | 0.00173 | 0.00592 | 0.02985 | 0.24859 |
+| beta | 0.00055 | 0.00082 | 0.00166 | 0.00608 | 0.03221 | 0.28343 |
+| ratio | **0.84** | 0.91 | 0.96 | 1.03 | 1.08 | **1.14** |
+
+Better at high noise, worse near the data, crossing over around sigma 0.3. The trade landed
+as designed; the premise that the high-sigma half is what matters here is what was wrong.
+The terminal region is what resolves fine temporal detail, and the Beta checkpoint pays for
+its coarse-scale accuracy there.
+
+**The likely reason it works for the VLAs and not here is scale.** Those models train on
+orders of magnitude more data with far larger backbones, where extra high-sigma capacity is
+affordable. At 150 episodes with an 8x8 action tensor it is not, and the low-sigma half
+funds it.
+
+**The metric lesson is the bigger one.** Open-loop action MSE cannot see any of this:
+
+| Euler steps | 4 | 8 | 16 | 24 | 30 | 50 |
+|---|---|---|---|---|---|---|
+| FM action MSE | 0.000406 | 0.000377 | 0.000368 | 0.000366 | 0.000366 | 0.000368 |
+| FM success | 20% | 28% | — | 60% | 67% | 49% |
+
+Three percent of movement in MSE against forty-seven points of success. Clamping moves it in
+the fifth decimal. Section 10 already noted MSE was uncorrelated with success *across
+variants*; it is also uncorrelated *within one checkpoint across step counts*, which is
+worse, because it means no cheap offline metric was adjudicating any of these decisions.
+
+**Chunk jerk does track it.** Mean `|second difference|` along the horizon, as a multiple of
+the demonstrations':
+
+| Euler steps | 4 | 8 | 16 | 30 | 50 |
+|---|---|---|---|---|---|
+| FM (uniform) | 3.77x | 2.25x | 1.62x | 1.55x | 1.52x |
+| FM-v2 (beta) | 3.33x | 2.40x | 1.95x | 1.93x | 1.85x |
+
+Low step counts emit chunks three to four times as ragged as the demonstrations, and the
+curve flattens right where success peaks. Beta sits ~25% worse at every converged step
+count, which is the mechanism behind its 21-point deficit and is consistent with the
+sigma table above. Use jerk, not MSE, for offline screening.
+
+**The clamp is a numerical no-op.** Over a 30-step trajectory only 4-5% of `x1_hat` entries
+ever leave `[-1, 1]`, and the worst is 1.07. Clamped and unclamped action MSE agree to the
+fifth decimal. The 17-point drop once attributed to turning the clamp on does not survive
+the seed accounting — 50-seed subsets of the FM checkpoint's own 100-seed run span 58% to
+76% at 95%. Default is now `null`.
+
+**`shift` is the one eval-time lever on an already-trained Beta checkpoint.** It is applied
+in `sigma_schedule` as well as `sample_sigma`, and training ran at 1.0, so sweeping it costs
+nothing. `shift<1` pulls the grid toward sigma=0 where Beta left the field weakest:
+
+| shift | 1.0 | 0.7 | 0.5 | 0.3 | 0.15 |
+|---|---|---|---|---|---|
+| FM-v2 jerk | 1.88x | 1.74x | 1.73x | **1.62x** | 1.79x |
+
+That recovers roughly 60% of the gap to uniform's 1.55x without retraining, and is worth
+trying on `*_clsdpbfgfmh25_*` (which trained under Beta) before spending a GPU on
+`train_study_bfg_fm_h25_uniform.sh`.
+
+**One thing that cannot be fixed at eval: `sigma_dist` itself.** `sample_sigma()` is reached
+from `compute_loss()` and nowhere else, and the sampler's grid comes from `sigma_schedule()`,
+a linspace that never consults it. The training distribution is baked into the weights, so
+a uniform version of any Beta-trained checkpoint is a new Stage 2 run.
 
 ---
 

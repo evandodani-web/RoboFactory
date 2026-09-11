@@ -30,8 +30,12 @@ policy:
   # baseline -- what failed at 4 steps was ODE discretization, not the fit. 30 is the only
   # measured setting that beats Study B, and it still costs 3.3x fewer model calls.
   #
-  # Lower this only with a matching eval number in hand. The open work is buying 30-step
-  # accuracy at a smaller budget: solver=heun first (free), then a beta-sigma retrain.
+  # Lower this only with a matching eval number in hand. Note that open-loop action MSE
+  # will not tell you: it moves 3% across 4 -> 30 steps while success moves 47 points.
+  # Chunk jerk does track it (3.8x the demonstrations at 4 steps, 1.55x at 30).
+  #
+  # The open work is buying 30-step accuracy at a smaller budget. solver=heun is free and
+  # still untested; the beta-sigma retrain was tried and lost (see sigma_dist).
   num_inference_steps: 30
 
   # euler: 1 model call per step. midpoint: 2 calls, second-order.
@@ -43,36 +47,48 @@ policy:
   # on the data manifold.
   sigma_min: 1.0e-4
 
-  # How sigma is drawn during training. Training-time only: changing this has no effect on
-  # an already-trained checkpoint.
+  # How sigma is drawn during training. TRAINING-TIME ONLY -- `sample_sigma` is reached
+  # from `compute_loss` and from nowhere else, and the sampler's grid comes from
+  # `sigma_schedule`, which never consults it. There is no way to change this on an
+  # existing checkpoint; a different sigma_dist is a different Stage 2 run.
   #
-  # beta + scale 1.5 is Beta(1.5, 1.0), what pi0, pi0.5, SmolVLA, GR00T and WALL-X all use.
-  # It puts ~65% of the mass above sigma=0.5 against uniform's 50%. That matters because
-  # the measured failure of this head is discretization error, not fit: the same checkpoint
-  # walks 20% -> 28% -> 40% -> 60% -> 67% as Euler steps go 4 -> 8 -> 12 -> 24 -> 30. The
-  # high-sigma half is where a few-step solver takes its largest and least recoverable
-  # steps, so that is where the field needs to be most accurate.
+  # uniform, after Beta was tried and rejected on LiftBarrier. Beta(1.5, 1.0) is what pi0,
+  # pi0.5, SmolVLA, GR00T and WALL-X use, and it did exactly what it promises -- 0.84x the
+  # velocity error at sigma=0.99 against uniform, crossing over near sigma=0.3 to 1.14x at
+  # sigma=0.02. But the terminal region is what resolves fine temporal detail here, so the
+  # Beta checkpoint emits chunks 1.9x as jerky as the demonstrations against uniform's
+  # 1.55x, and scored 46/100 against uniform's 67/100 at the same 30 steps.
   #
-  # Alternatives: uniform is the untuned baseline the first FM run used; logit_normal (SD3)
-  # concentrates on mid-sigma instead, and wants sigma_dist_scale back at 1.0.
-  sigma_dist: beta
+  # The plausible reading is scale: those VLAs train on orders of magnitude more data with
+  # far larger backbones, where the extra high-sigma capacity is affordable. At 150
+  # episodes and an 8x8 action tensor it is not, and the low-sigma half pays for it.
+  #
+  # logit_normal (SD3) concentrates on mid-sigma instead and wants sigma_dist_scale at 1.0.
+  sigma_dist: uniform
   sigma_dist_loc: 0.0
-  sigma_dist_scale: 1.5
+  sigma_dist_scale: 1.0
 
   # Bound on the implied clean sample |x1_hat|, applied at every solver step -- the flow
-  # analogue of the DDPM head's clip_sample=True, which Study B ran with. Normalized
-  # actions live in [-1, 1], so this costs nothing when the solver is already accurate and
-  # bounds the overshoot when it is not: at 4 steps 5.1% of predictions left [-1, 1]
-  # (max 1.033), against exactly 0% for both DDPM variants.
+  # analogue of the DDPM head's clip_sample=True, which Study B ran with.
   #
-  # Unlike sigma_dist this is an inference-time knob, so it applies to existing
-  # checkpoints. Set to null to disable; it is dropped automatically under
-  # action_space=latent, where the flow runs in an unbounded code space.
-  clamp_x1: 1.0
+  # Off, because it turned out to be a numerical no-op rather than a fix. Measured over a
+  # 30-step trajectory: only 4-5% of x1_hat entries ever leave [-1, 1], and the worst is
+  # 1.07, so clamping moves open-loop action MSE in the fifth decimal (0.000366 either
+  # way). The 17-point drop once attributed to it does not survive the seed accounting.
+  #
+  # Unlike sigma_dist this IS an inference-time knob, so it applies to existing checkpoints
+  # and can be swept for free. It is dropped automatically under action_space=latent, where
+  # the flow runs in an unbounded code space.
+  clamp_x1: null
 
   # SD3/Flux time shift, sigma' = shift*sigma / (1 + (shift-1)*sigma). 1.0 disables it.
   # CLS-DP-improvements.md section 4 argues the optimal shift here is ~0 because the action
   # tensor is only 8x8 = 64 values, so this stays off by default.
+  #
+  # It is applied in both sample_sigma and sigma_schedule, so with training left at 1.0 it
+  # is a pure inference knob and sweepable on existing checkpoints. It is also the one
+  # eval-time lever on a Beta-trained checkpoint: shift<1 pulls the grid toward sigma=0,
+  # and shift=0.3 recovered ~60% of the Beta checkpoint's excess jerk (1.88x -> 1.62x).
   shift: 1.0
 
   # CRITICAL. SinusoidalPosEmb builds frequencies spanning 1.0 down to 1e-4, so a raw

@@ -144,7 +144,9 @@ grep -h "Stage 1 gate" "${LOG_DIR}"/stage1_agent*.log || echo "(no gate lines fo
 echo
 
 # One Stage 2 yaml; SAMPLER flips DDPM <-> flow via the Hydra sampler group.
-# The flow head inherits its current defaults: Beta(1.5,1) sigma, clamp_x1=1.0, 30 steps.
+# The flow head inherits its current defaults: uniform sigma, no clamp, 30 steps. The
+# existing *_clsdpbfgfmh25_* checkpoints predate that revert and trained under Beta(1.5,1);
+# train_study_bfg_fm_h25_uniform.sh is the uniform arm, as a Stage-2-only re-run.
 export CONFIG_NAME=cls_dp_bfg
 export CTX_TAG=${CTX_TAG_NAME}
 export SAMPLER
@@ -194,9 +196,9 @@ Two caveats worth writing down before reading this run:
      latent, flow head, 25-step chunks). It answers "is the combination the best policy we
      have", not "which part did the work". The h8 arms are what isolate the split, and
      SAMPLER=ddpm HORIZON=h8 is cheap once *_ctxbfg_* exists.
-  2. Study FM's 67% was trained under the old uniform sigma while anything trained now gets
-     Beta(1.5,1), so it is a slightly stale control. train_study_fm_v2.sh refreshes it as a
-     Stage-2-only run on Study B's existing *_ctx_* prior.
+  2. Study FM's 67% and anything trained now share uniform sigma, so it is a clean control.
+     The Beta experiment (train_study_fm_v2.sh) scored 46% and the default was reverted;
+     *_clsdpbfgfmh25_* is the one checkpoint still carrying it.
 
 If the leak probe still says NOT SEPARATED, treat success-rate movement cautiously — the
 split may still be cosmetic.

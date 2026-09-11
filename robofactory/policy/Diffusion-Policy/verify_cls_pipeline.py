@@ -854,9 +854,9 @@ def test_factorized_variant(workdir, zarr_path):
           and cfg_bfgfm.policy.prior_net.get("deterministic", False) is False
           and "det" not in cfg_bfgfm.checkpoint_name)
     check("B-FG+flow inherits the current flow defaults",
-          cfg_bfgfm.policy.sigma_dist == "beta"
-          and cfg_bfgfm.policy.sigma_dist_scale == 1.5
-          and cfg_bfgfm.policy.clamp_x1 == 1.0
+          cfg_bfgfm.policy.sigma_dist == "uniform"
+          and cfg_bfgfm.policy.sigma_dist_scale == 1.0
+          and cfg_bfgfm.policy.clamp_x1 is None
           and cfg_bfgfm.policy.num_inference_steps == 30,
           f"sigma={cfg_bfgfm.policy.sigma_dist}/{cfg_bfgfm.policy.sigma_dist_scale} "
           f"clamp={cfg_bfgfm.policy.clamp_x1} steps={cfg_bfgfm.policy.num_inference_steps}")
@@ -898,8 +898,25 @@ def test_factorized_variant(workdir, zarr_path):
           and cfg_bfgfmh25.policy.horizon == 25
           and cfg_bfgfmh25.policy.latent_sample is True
           and cfg_bfgfmh25.latent_tag == "bfg"
-          and cfg_bfgfmh25.policy.sigma_dist == "beta"
-          and cfg_bfgfmh25.policy.clamp_x1 == 1.0)
+          and cfg_bfgfmh25.policy.sigma_dist == "uniform"
+          and cfg_bfgfmh25.policy.clamp_x1 is None)
+
+    # The uniform re-run of the same stack. The *_clsdpbfgfmh25_* checkpoints on disk
+    # trained under the old Beta default, and sigma_dist cannot be changed after training,
+    # so run_tag has to keep the two arms apart rather than overwrite the Beta one.
+    cfg_bfgfmh25u = load_cfg(
+        "cls_dp_bfg", zarr_path, ["sampler=flow", "horizon=h25", "run_tag=uni"]
+    )
+    check("B-FG+flow+h25 uniform re-run gets its own tag",
+          cfg_bfgfmh25u.checkpoint_name
+          == f"{TASK}_clsdpbfgfmh25uni_Agent0_{N_EPISODES}"
+          and cfg_bfgfmh25u.checkpoint_name != cfg_bfgfmh25.checkpoint_name,
+          cfg_bfgfmh25u.checkpoint_name)
+    check("B-FG+flow+h25 uniform re-run differs only in run_tag",
+          cfg_bfgfmh25u.policy._target_ == cfg_bfgfmh25.policy._target_
+          and cfg_bfgfmh25u.policy.horizon == cfg_bfgfmh25.policy.horizon
+          and cfg_bfgfmh25u.latent_tag == cfg_bfgfmh25.latent_tag
+          and cfg_bfgfmh25u.policy.n_exec_steps == cfg_bfgfmh25.policy.n_exec_steps)
     check("B-FG+flow+h25 executed slice is 23",
           cfg_bfgfmh25.policy.n_exec_steps == 23,
           str(cfg_bfgfmh25.policy.n_exec_steps))
@@ -919,12 +936,28 @@ def test_factorized_variant(workdir, zarr_path):
           cfg_fmv2.checkpoint_name
           != load_cfg("cls_dp", zarr_path, ["sampler=flow"]).checkpoint_name)
     check("FM-v2 differs from Study FM only in transport config",
-          cfg_fmv2.policy.sigma_dist == "beta"
-          and cfg_fmv2.policy.sigma_dist_scale == 1.5
-          and cfg_fmv2.policy.clamp_x1 == 1.0
-          and cfg_fmv2.policy.num_inference_steps == 30
+          cfg_fmv2.policy.num_inference_steps == 30
           and cfg_fmv2.policy.horizon == 8
           and cfg_fmv2.latent_tag == "")
+
+    # FM-v2 IS the Beta study, but Beta is no longer the default, so its script pins the
+    # transport explicitly. Check the overrides it actually passes still compose.
+    cfg_fmv2_beta = load_cfg(
+        "cls_dp",
+        zarr_path,
+        [
+            "sampler=flow",
+            "run_tag=v2",
+            "policy.sigma_dist=beta",
+            "policy.sigma_dist_scale=1.5",
+            "policy.clamp_x1=1.0",
+        ],
+    )
+    check("FM-v2's explicit Beta overrides compose",
+          cfg_fmv2_beta.policy.sigma_dist == "beta"
+          and cfg_fmv2_beta.policy.sigma_dist_scale == 1.5
+          and cfg_fmv2_beta.policy.clamp_x1 == 1.0
+          and cfg_fmv2_beta.checkpoint_name == cfg_fmv2.checkpoint_name)
 
     ws1 = ContextualizerWorkspace(cfg1, output_dir=os.path.join(workdir, "out_fg1"))
     check("monolithic decoder is not built when factorized", ws1.model.ma_decoder is None)
@@ -1202,8 +1235,12 @@ def test_study_fm_modularity():
           and "bash ${SCRIPT_DIR}/train_cls_stage1.sh" not in fm)
     check("train_study_fm.sh requires existing *_ctx_* checkpoints",
           "require_ckpt" in fm and "_ctx_Agent" in fm)
-    check("train_cls_stage1.sh refuses overwrite without FORCE_OVERWRITE_CTX",
-          "refuse_overwrite_ckpt" in stage1 and "FORCE_OVERWRITE_CTX" in stage1)
+    # The escape hatch lives in the guard, not the caller: stage1 only has to invoke it.
+    # FORCE_OVERWRITE_CTX is the older Stage-1-only spelling and is still honoured.
+    check("train_cls_stage1.sh refuses overwrite unless forced",
+          "refuse_overwrite_ckpt" in stage1
+          and "FORCE_OVERWRITE_CKPT" in guard
+          and "FORCE_OVERWRITE_CTX" in guard)
     check("train_study_fm.sh records reused Stage 1 fingerprints",
           "print_ckpt_fingerprint" in fm and "reused_stage1_fingerprints.txt" in fm)
 

@@ -16,7 +16,9 @@
 # and the DDPM control costs only its own Stage 2. Run both or the result is not
 # attributable -- see train_study_bfg.sh.
 #
-# Inherits the current flow defaults: Beta(1.5, 1) sigma, clamp_x1=1.0, 30 Euler steps.
+# Inherits the current flow defaults: uniform sigma, no clamp, 30 Euler steps. Beta(1.5, 1)
+# was briefly the default and is what *_clsdpbfgfmh25_* trained under; it lost by 21 points
+# and was reverted. sigma_dist cannot be changed after training -- see sampler/flow.yaml.
 # Checkpoints land under *_clsdpbfgfm_*, distinct from *_clsdpbfg_* (DDPM arm) and
 # *_clsdpfgfm_* (the DET-based Study FG lineage).
 defaults:

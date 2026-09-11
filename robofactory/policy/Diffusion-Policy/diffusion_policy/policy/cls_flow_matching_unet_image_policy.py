@@ -51,7 +51,7 @@ class CLSFlowMatchingUnetImagePolicy(CLSDiffusionUnetImagePolicy):
         *,
         num_inference_steps: int = 30,
         solver: str = "euler",
-        sigma_dist: str = "beta",
+        sigma_dist: str = "uniform",
         sigma_dist_loc: float = 0.0,
         sigma_dist_scale: Optional[float] = None,
         shift: float = 1.0,
@@ -61,7 +61,7 @@ class CLSFlowMatchingUnetImagePolicy(CLSDiffusionUnetImagePolicy):
         action_autoencoder: Optional[nn.Module] = None,
         action_ae_ckpt: Optional[str] = None,
         sigma_min: float = 1e-4,
-        clamp_x1: Optional[float] = 1.0,
+        clamp_x1: Optional[float] = None,
         **kwargs,
     ):
         if num_inference_steps is None:

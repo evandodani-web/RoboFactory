@@ -55,18 +55,23 @@ class RectifiedFlowTransport:
 
     Stateless with respect to sampling: every call derives its own sigma schedule, so there
     is no step counter to desynchronize.
+
+    `sigma_dist` and `clamp_x1` both default off (uniform, no clamp) because both were
+    measured on LiftBarrier and neither helped -- see docs/CLS-DP-variant-flow-matching.md
+    section 10.1. Beta(1.5, 1) is the field standard for large VLAs but cost 21 points of
+    success here; the clamp is a numerical no-op at this scale. Turn either on per-run.
     """
 
     def __init__(
         self,
-        sigma_dist: str = "beta",
+        sigma_dist: str = "uniform",
         sigma_dist_loc: float = 0.0,
         sigma_dist_scale: Optional[float] = None,
         shift: float = 1.0,
         timestep_scale: float = 1000.0,
         solver: str = "euler",
         sigma_min: float = 1e-4,
-        clamp_x1: Optional[float] = 1.0,
+        clamp_x1: Optional[float] = None,
     ):
         if sigma_dist not in SIGMA_DISTRIBUTIONS:
             raise ValueError(

@@ -424,7 +424,8 @@ def main():
         x_ref = ref.step(mo, t, x_ref).prev_sample
 
     # ours loop. diffusers' scheduler has no clean-sample clamp, so the oracle comparison
-    # is against clamp_x1=None; the clamp is checked separately below.
+    # is against clamp_x1=None -- which is now also the default, but is spelled out here so
+    # the oracle keeps holding if that default ever moves again.
     unclamped = RectifiedFlowTransport(timestep_scale=1000.0, clamp_x1=None)
     torch.manual_seed(0)
     x_ours = unclamped.sample(
@@ -438,7 +439,10 @@ def main():
     check("Euler sampling matches diffusers", torch.allclose(x_ours, x_ref, atol=1e-6))
 
     # --- clean-sample clamp (the flow analogue of DDPM clip_sample=True)
-    check("clamp_x1 defaults to 1.0", transport.clamp_x1 == 1.0)
+    # Off by default: measured on LiftBarrier it is a numerical no-op (4-5% of x1_hat
+    # entries leave [-1, 1], worst case 1.07). It still has to work when asked for.
+    check("clamp_x1 defaults to off", transport.clamp_x1 is None)
+    clamped = RectifiedFlowTransport(timestep_scale=1000.0, clamp_x1=1.0)
 
     # step_to must be the plain Euler step whenever the clamp is inactive, so that turning
     # the clamp on is the only behavioural difference and not a rewrite of the solver.
@@ -456,7 +460,7 @@ def main():
     # A velocity this large drives the implied x1 far outside [-1, 1] at every step, so the
     # clamp has to be what bounds the output rather than the model happening to behave.
     blowup = lambda x, t_model: 5.0 * torch.ones_like(x)
-    x_clamped = transport.sample(
+    x_clamped = clamped.sample(
         blowup, shape=x1.shape, num_steps=N_STEPS, device=x1.device,
         dtype=x1.dtype, noise=eps,
     )
@@ -613,20 +617,33 @@ def main():
     check("training sigma stays in (0, 1]",
           float(sampled.max()) <= 1.0 + 1e-7)
 
-    # --- default sigma distribution is pi0's Beta(1.5, 1.0)
-    check("sigma_dist defaults to beta(1.5)",
-          transport.sigma_dist == "beta" and transport.sigma_dist_scale == 1.5)
+    # --- default sigma distribution is uniform
+    # Beta(1.5, 1.0) is what pi0/pi0.5/SmolVLA/GR00T use and it is still available, but on
+    # LiftBarrier it scored 46/100 against uniform's 67/100, so it is not the default here.
+    check("sigma_dist defaults to uniform",
+          transport.sigma_dist == "uniform" and transport.sigma_dist_scale == 1.0)
+    print(f"       sigma mean ours {float(sampled.mean()):.4f} vs uniform 0.5000; "
+          f"frac>0.5 = {float((sampled > 0.5).float().mean()):.3f}")
+    check("default sigma is uniform on (0, 1]",
+          abs(float(sampled.mean()) - 0.5) < 0.01
+          and abs(float((sampled > 0.5).float().mean()) - 0.5) < 0.02)
+
+    # Beta still has to be correct when selected, since it is one override away.
+    beta_t = RectifiedFlowTransport(sigma_dist="beta")
+    check("beta resolves to its own scale default of 1.5", beta_t.sigma_dist_scale == 1.5)
+    beta_sampled = beta_t.sample_sigma(
+        4096, device="cpu", generator=torch.Generator().manual_seed(0)
+    )
     ref_beta = torch.distributions.Beta(
         torch.tensor(1.5), torch.tensor(1.0)
     ).sample((200000,))
-    print(f"       sigma mean ours {float(sampled.mean()):.4f} vs "
-          f"torch Beta(1.5,1) {float(ref_beta.mean()):.4f}; "
-          f"frac>0.5 = {float((sampled > 0.5).float().mean()):.3f} (uniform would be 0.5)")
-    check("default sigma matches Beta(1.5, 1.0)",
-          abs(float(sampled.mean()) - float(ref_beta.mean())) < 0.01)
-    # The whole point of the switch: more mass on the high-sigma half of the path.
-    check("default sigma favours high noise over uniform",
-          float((sampled > 0.5).float().mean()) > 0.6)
+    print(f"       beta mean ours {float(beta_sampled.mean()):.4f} vs "
+          f"torch Beta(1.5,1) {float(ref_beta.mean()):.4f}")
+    check("beta matches Beta(1.5, 1.0)",
+          abs(float(beta_sampled.mean()) - float(ref_beta.mean())) < 0.01)
+    # The point of that switch, when it is asked for: more mass on the high-sigma half.
+    check("beta favours high noise over uniform",
+          float((beta_sampled > 0.5).float().mean()) > 0.6)
     check(
         "logit_normal keeps its own scale default of 1.0",
         RectifiedFlowTransport(sigma_dist="logit_normal").sigma_dist_scale == 1.0,

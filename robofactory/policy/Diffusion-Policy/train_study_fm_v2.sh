@@ -14,6 +14,13 @@
 # thing: does pi0's high-noise-biased timestep distribution produce a field that integrates
 # better, especially at low step counts?
 #
+# It did not: 46/100 against Study FM's 67/100 at the same 30 steps. The velocity field came
+# out better at high sigma (0.84x the error at 0.99) and worse near the data (1.14x at
+# 0.02), and the terminal region is what resolves fine temporal detail here — the Beta
+# checkpoint emits chunks 1.9x as jerky as the demonstrations against uniform's 1.55x. The
+# flow default was reverted to uniform afterwards, which is why the overrides below are now
+# spelled out: this script no longer inherits Beta and has to ask for it.
+#
 #   Stage 1  (none — reuses *_ctx_* from Study B)
 #   Stage 2  cls_dp.yaml sampler=flow run_tag=v2 -> *_clsdpfmv2_*
 #
@@ -66,7 +73,13 @@ export CONFIG_NAME=cls_dp
 export CTX_TAG=ctx
 export SAMPLER=flow
 # shellcheck disable=SC2206
-extra_overrides=( run_tag=v2 ${EXTRA_OVERRIDES:-} )
+extra_overrides=(
+    run_tag=v2
+    policy.sigma_dist=beta
+    policy.sigma_dist_scale=1.5
+    policy.clamp_x1=1.0
+    ${EXTRA_OVERRIDES:-}
+)
 for agent in $(seq 0 $((AGENTS - 1))); do
     ckpt="checkpoints/${TASK}_${STAGE2_TAG}_Agent${agent}_${DEMOS}/100.ckpt"
     if [ -f "${ckpt}" ]; then

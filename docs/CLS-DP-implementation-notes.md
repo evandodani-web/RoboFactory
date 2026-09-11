@@ -810,22 +810,34 @@ The axes compose independently via Hydra groups (`sampler`, `action_space`, `hor
 `horizon=h8` is the default and keeps the checkpoint names above unchanged.
 `horizon=h25` appends `h25` and must train its own Stage 1 (`time_embed` is length 25).
 
-### Study FM-v2 — Study FM under the current flow defaults (built, not yet trained)
+### Study FM-v2 — the Beta sigma experiment (trained; **46%**, rejected)
 
-Stage 2 only. The flow head lives entirely in Stage 2, so this reuses Study B's `*_ctx_*`
-priors untouched and changes exactly one trainable thing.
+Stage 2 only. The flow head lives entirely in Stage 2, so this reused Study B's `*_ctx_*`
+priors untouched and changed exactly one trainable thing.
 
 | | Study FM | Study FM-v2 |
 |---|---|---|
 | `sigma_dist` | `uniform` | **Beta(1.5, 1.0)** |
 | `clamp_x1` | none | 1.0 |
 | default steps | 4 | 30 |
+| Success @30 steps, 100 seeds | **67%** | **46%** |
 
-Only `sigma_dist` needs retraining — clamp and step count are inference knobs already
-measurable on the old checkpoint. So the run isolates one question: does pi0's
-high-noise-biased timestep distribution produce a field that integrates better at low step
-counts? The answer is in the step curve, not the headline number; Study FM's was
-20/28/40/60/67% at 4/8/12/24/30 steps.
+Only `sigma_dist` needed retraining — clamp and step count are inference knobs already
+measurable on the old checkpoint. The run asked whether pi0's high-noise-biased timestep
+distribution produces a field that integrates better at low step counts. It does not, here:
+Beta improved velocity accuracy at high sigma (0.84x the error at 0.99) and degraded it near
+the data (1.14x at 0.02), and the terminal region is what resolves fine temporal detail on
+this task. The Beta checkpoint emits chunks 1.9x as jerky as the demonstrations against
+uniform's 1.55x. Full analysis in `CLS-DP-variant-flow-matching.md` section 10.1.
+
+The flow defaults were reverted to `sigma_dist=uniform`, `clamp_x1=null` as a result, so
+`train_study_fm_v2.sh` now passes those overrides explicitly rather than inheriting them.
+
+Two things this cost us that are worth remembering. **`sigma_dist` cannot be changed after
+training** — `sample_sigma()` is reached only from `compute_loss()`, and the sampler's grid
+comes from `sigma_schedule()`, which never consults it. And **open-loop action MSE is not a
+usable screening metric**: it moves 3% across step counts that swing success by 47 points.
+Chunk jerk does track success; use that.
 
 | Knob | Value |
 |---|---|
@@ -871,9 +883,9 @@ completes a 2x2 in which each change is separately attributable:
 | monolithic | Study B **61%** | Study FM **67%** |
 | factorized | `clsdpbfg` ? | `clsdpbfgfm` ? |
 
-One caveat to record before reading the result: Study FM's 67% was trained under the old
-`sigma_dist=uniform`, while anything trained now gets Beta(1.5, 1), so the top-right cell is
-a stale control. Study FM-v2 above refreshes it as a Stage-2-only run.
+Study FM's 67% and anything trained now share `sigma_dist=uniform`, so the top-right cell is
+a clean control. That was briefly not true — see Study FM-v2 above — and the one checkpoint
+still carrying Beta is `*_clsdpbfgfmh25_*`.
 
 #### Study B-FG-FM-H25 — the full stack
 
@@ -897,6 +909,26 @@ policy we have", not "which part did the work". That is a deliberate trade: Stud
 factorization gaining 6 points even on DET's weaker base, and Study FM already beats Study B
 on its own, so both components have independent support. The `SAMPLER=ddpm HORIZON=h8` arm
 is still the only run that isolates the split, and it is cheap once `*_ctxbfg_*` exists.
+
+**The trained `*_clsdpbfgfmh25_*` checkpoints carry a fourth change nobody intended.** They
+trained while `sigma_dist=beta` was the default, which Study FM-v2 later showed costs ~21
+points, and `sigma_dist` cannot be undone at eval. So this stack is currently handicapped.
+
+| | Study B-FG-FM-H25 (on disk) | uniform re-run |
+|---|---|---|
+| `sigma_dist` | `beta` (1.5) | `uniform` |
+| Stage 2 tag | `*_clsdpbfgfmh25_*` | `*_clsdpbfgfmh25uni_*` |
+| Pipeline | `SAMPLER=flow HORIZON=h25 train_study_bfg.sh` | `train_study_bfg_fm_h25_uniform.sh` |
+
+The re-run is Stage 2 only — Stage 1 is a CVAE prior with no flow head in it, so
+`*_ctxbfgh25_*` is reused untouched. `run_tag=uni` keeps the two arms apart; without it the
+config composes to `clsdpbfgfmh25` and would overwrite the Beta run, destroying the only
+paired `sigma_dist` ablation this project has. Evaluate both on seeds 1000-1099 and read the
+pair with McNemar, not an independent two-proportion test.
+
+Before spending 14 GPU-hours on that, two eval-time knobs are free on the existing Beta
+checkpoint: `shift` (0.3 recovered ~60% of FM-v2's excess jerk) and `solver=heun`, still
+untested. Details in `CLS-DP-variant-flow-matching.md` section 10.1.
 
 ### Checkpoint guards
 
