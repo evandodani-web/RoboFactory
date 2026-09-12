@@ -75,6 +75,25 @@ Euler flow matching (`clsdpbfgfmh25`, noclamp, `max_steps=65`). Headline 30-step
 
 
 
+## LiftBarrier-rf — Combo B-FG-FM-H25-uni flow-step sweep (50 seeds, 1000–1049)
+
+Euler flow matching (`clsdpbfgfmh25uni`, noclamp, `max_steps=65`). Headline 30-step result in the main table is 100 seeds.
+
+
+| Steps | SR        | Successes | Run                                                                 |
+| ----- | --------- | --------- | ------------------------------------------------------------------- |
+| 16    | **42.0%** | 21/50     | `LiftBarrier-rf_clsdpbfgfmh25uni_s16_noclamp_150_100_20260912_132538` |
+| 24    | **48.0%** | 24/50     | `LiftBarrier-rf_clsdpbfgfmh25uni_s24_noclamp_150_100_20260912_134356` |
+| 30    | **44.0%** | 22/50*    | `LiftBarrier-rf_clsdpbfgfmh25uni_noclamp_150_100_20260912_072852` (same half of 100-seed run) |
+| 40    | **42.0%** | 21/50     | `LiftBarrier-rf_clsdpbfgfmh25uni_s40_noclamp_150_100_20260912_140215` |
+| 50    | **42.0%** | 21/50     | `LiftBarrier-rf_clsdpbfgfmh25uni_s50_noclamp_150_100_20260912_142318` |
+
+*Full 100-seed SR at 30 steps is **49.0%** (49/100).
+
+**Read:** peak at **24 steps (48%)** on this half; 16/40/50 are flat at 42%. Extra denoising past ~24 does **not** help (unlike FM-v1).
+
+
+
 ## LiftBarrier-rf — Combo schedule: uniform vs Beta (100 seeds, 30 Euler, noclamp)
 
 Same B-FG-FM-H25 stack and shared `ctxbfgh25` priors; only Stage-2 `sigma_dist` differs. Both evals: `max_steps=65`, `--no-clamp-x1`, shift=1.0.
