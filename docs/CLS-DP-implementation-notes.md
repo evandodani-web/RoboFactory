@@ -930,6 +930,59 @@ Before spending 14 GPU-hours on that, two eval-time knobs are free on the existi
 checkpoint: `shift` (0.3 recovered ~60% of FM-v2's excess jerk) and `solver=heun`, still
 untested. Details in `CLS-DP-variant-flow-matching.md` section 10.1.
 
+##### Result: the combo lost to every one of its parts
+
+Both arms trained and evaluated on seeds 1000-1099. All comparisons below are McNemar on
+paired seeds, which is the correct test because every run shares the same seed set.
+
+| Run | SR | vs combo uniform |
+|---|---|---|
+| Study FM (h8, flow @30) | 67% | z=2.51, significant |
+| Study B-H25 (h25, DDPM) | 66% | z=2.63, significant |
+| Study B (h8, DDPM) | 61% | z=1.74, marginal |
+| **Combo uniform** | **49%** | — |
+| **Combo Beta** | **38%** | z=2.29, uniform wins |
+
+Two clean results and one problem. Uniform beats Beta a third time, consistent with FM-v2.
+And **Study FM and Study B-H25 are statistically identical** — 67% vs 66% with 24 seeds going
+each way, z=0.00. The flow head at h8 and DDPM at h25 are the same policy quality, so the
+combo was never stacking two independent wins.
+
+The problem is that the combo is genuinely worse than all three of its components, by 17
+points against the best of them. The eval budget is not the explanation: successful episodes
+finish in 4-5 policy cycles at h25 and 14-62 at h8 (about 100 environment steps either way),
+and **no success in any 100-seed run has ever needed more than 65 cycles**, so the combo's
+`max_steps=65` never binds and is directly comparable to B-H25's 250.
+
+Of the combo's three components, two are measured and two are not:
+
+| Component | Measured? |
+|---|---|
+| flow head at h8 | yes — Study FM, 67% |
+| h25 with DDPM | yes — Study B-H25, 66% |
+| factorized latent on a **stochastic** base | **never** — no `*_ctxbfg_*` / `*_clsdpbfg_*` exists |
+| flow head at **h25** | **never** — Study FM was only ever h8 |
+
+Factorization is the leading suspect, and not only by elimination. The `*_ctxbfgh25_*`
+Stage 1 leak probe reported `NOT SEPARATED` at ratio 1.21-1.26x, i.e. `z_self` still predicts
+teammates about as well as the full prior does. The split paid its capacity cost and bought
+no actual separation. Study FG's +6 was measured on DET's already-degenerate latent, where
+almost any added structure helps; that does not transfer to a working stochastic prior.
+
+**Deciding run: `SAMPLER=flow bash train_study_b_h25.sh`** -> `*_clsdpfmh25_*`. Stage 2 only,
+since `*_ctxh25_*` already exists. It is the flow head at h25 without factorization, so it
+splits the 17-point deficit: landing near 66% indicts factorization, landing near 49% indicts
+flow@h25.
+
+##### Sample-size caveat on this whole task
+
+Every failed episode runs to the step cap while every success finishes in the first few
+cycles. LiftBarrier is effectively one-shot — the policy either makes the grasp on its first
+approach or never recovers — so success rate is close to a single Bernoulli trial per episode.
+At 100 seeds that is about +/-5pp of standard error, and differences under ~10pp will not
+resolve. That is why so many of these study comparisons come back marginal, and it is an
+argument for either more seeds or a task with recovery behavior.
+
 ### Checkpoint guards
 
 Stage 2 finals land in the shared repo-level `checkpoints/${checkpoint_name}/` tree, not the
