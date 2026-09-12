@@ -1,0 +1,29 @@
+{
+  "env_id": "LiftBarrier-rf",
+  "seed": 1031,
+  "ckpt_prefix": "clsdpfmv2",
+  "checkpoint_num": 100,
+  "num_inference_steps": 30,
+  "solver": "euler",
+  "clamp_x1": null,
+  "success": true,
+  "policy_ms_total": 3014.4,
+  "episode_ms_total": 11572.2,
+  "policy_fraction_of_episode": 0.2605,
+  "per_agent": [
+    {
+      "policy_calls": 15,
+      "denoiser_calls": 450,
+      "ms_per_action": 105.644,
+      "denoiser_calls_per_action": 30.0,
+      "total_ms": 1584.7
+    },
+    {
+      "policy_calls": 15,
+      "denoiser_calls": 450,
+      "ms_per_action": 95.315,
+      "denoiser_calls_per_action": 30.0,
+      "total_ms": 1429.7
+    }
+  ]
+}

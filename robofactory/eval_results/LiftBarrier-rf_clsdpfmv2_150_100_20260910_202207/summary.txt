@@ -1,0 +1,8 @@
+task: LiftBarrier-rf
+variant: clsdpfmv2
+inference_steps: default
+solver: flow-matching (euler)
+demos: 150  checkpoint: 100
+seeds: 1000..1000
+total: 1  success: 1  success_rate: 100.0%
+videos: eval_results/LiftBarrier-rf_clsdpfmv2_150_100_20260910_202207/videos/

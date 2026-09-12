@@ -86,6 +86,19 @@ class Args:
     once and evaluated at several step counts, so this makes the sweep a pure
     inference-time experiment rather than a retraining one."""
 
+    clamp_x1: Optional[float] = None
+    """Override the flow transport's clean-sample clamp bound (e.g. 1.0). Ignored for
+    non-flow policies. Use with --no-clamp-x1 to disable clamping entirely."""
+
+    no_clamp_x1: bool = False
+    """Disable the flow clean-sample clamp (sets transport.clamp_x1 = None). Needed to
+    evaluate FM-v2 unclamped: its checkpoint saves clamp_x1=1.0, so the class default
+    alone cannot turn it off."""
+
+    shift: Optional[float] = None
+    """Override the flow transport's SD3-style time shift. Identity at 1.0; values <1
+    pull the inference sigma grid toward clean actions. Pure inference knob."""
+
     timing_json: Optional[str] = None
     """Write per-episode sampler latency here. eval_cls_sweep.sh aggregates these."""
 
@@ -235,6 +248,9 @@ class CLSDP:
         latent_sample=None,
         ckpt_prefix="clsdp",
         num_inference_steps=None,
+        clamp_x1=None,
+        no_clamp_x1=False,
+        shift=None,
     ):
         checkpoint = (
             f"checkpoints/{task_name}_{ckpt_prefix}_Agent{agent_id}_{data_num}/"
@@ -245,6 +261,15 @@ class CLSDP:
             self.policy.latent_sample = latent_sample
         if num_inference_steps is not None:
             self.policy.num_inference_steps = num_inference_steps
+        transport = getattr(self.policy, "transport", None)
+        if transport is not None and (no_clamp_x1 or clamp_x1 is not None):
+            if no_clamp_x1 and clamp_x1 is not None:
+                raise ValueError("pass only one of --no-clamp-x1 and --clamp-x1")
+            transport.clamp_x1 = None if no_clamp_x1 else float(clamp_x1)
+        if transport is not None and shift is not None:
+            if float(shift) <= 0:
+                raise ValueError(f"--shift must be positive, got {shift}")
+            transport.shift = float(shift)
         self.stats = SamplerStats()
         self.stats.attach(self.policy)
         self.runner = CLSRunner(
@@ -283,15 +308,16 @@ def report_and_finish(cls_models, args, env_id, verdict, record_dir, episode_ms)
     """
     per_agent = [m.stats.summary() for m in cls_models]
     policy_ms = sum(a["total_ms"] for a in per_agent)
+    transport = getattr(cls_models[0].policy, "transport", None)
     payload = {
         "env_id": env_id,
         "seed": args.seed[0] if args.seed else None,
         "ckpt_prefix": args.ckpt_prefix,
         "checkpoint_num": args.checkpoint_num,
         "num_inference_steps": cls_models[0].policy.num_inference_steps,
-        "solver": getattr(
-            getattr(cls_models[0].policy, "transport", None), "solver", "ddpm"
-        ),
+        "solver": getattr(transport, "solver", "ddpm"),
+        "clamp_x1": getattr(transport, "clamp_x1", None),
+        "shift": getattr(transport, "shift", None),
         "success": verdict == "success",
         # Kept apart on purpose: the sampler swap moves policy_ms, while episode_ms is
         # dominated by TOPP smoothing and simulator substeps that it does not touch.
@@ -382,11 +408,18 @@ def main(args: Args):
         if args.num_inference_steps is not None
         else "sdefault"
     )
+    if args.no_clamp_x1:
+        clamp_tag = "_noclamp"
+    elif args.clamp_x1 is not None:
+        clamp_tag = f"_clamp{args.clamp_x1:g}"
+    else:
+        clamp_tag = ""
+    shift_tag = f"_shift{args.shift:g}" if args.shift is not None else ""
     record_dir = None
     if args.record_dir:
         record_dir = os.path.join(
             args.record_dir.format(env_id=env_id),
-            f"{args.ckpt_prefix}_{steps_tag}_{args.data_num}_{args.checkpoint_num}",
+            f"{args.ckpt_prefix}_{steps_tag}{clamp_tag}{shift_tag}_{args.data_num}_{args.checkpoint_num}",
             f"seed_{seed0}",
         )
         env = RecordEpisodeMA(
@@ -437,13 +470,22 @@ def main(args: Args):
             latent_sample=args.latent_sample,
             ckpt_prefix=args.ckpt_prefix,
             num_inference_steps=args.num_inference_steps,
+            clamp_x1=args.clamp_x1,
+            no_clamp_x1=args.no_clamp_x1,
+            shift=args.shift,
         )
         for agent_id in range(agent_num)
     ]
     head = cls_models[0].policy
+    transport = getattr(head, "transport", None)
+    clamp_repr = (
+        getattr(transport, "clamp_x1", None) if transport is not None else "n/a"
+    )
+    shift_repr = getattr(transport, "shift", None) if transport is not None else "n/a"
     print(
         f"sampler: {type(head).__name__} steps={head.num_inference_steps} "
-        f"solver={getattr(getattr(head, 'transport', None), 'solver', 'ddpm')}"
+        f"solver={getattr(transport, 'solver', 'ddpm')} "
+        f"clamp_x1={clamp_repr} shift={shift_repr}"
     )
 
     if args.seed is not None and env.action_space is not None:
