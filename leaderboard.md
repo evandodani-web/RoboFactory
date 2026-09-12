@@ -35,9 +35,9 @@ Euler flow matching (`clsdpfm`).
 
 
 
-## LiftBarrier-rf — FM-v2 flow-step sweep (50 seeds, 1000–1049)
+## LiftBarrier-rf — FM-v2 flow-step / denoise sweep (50 seeds, 1000–1049)
 
-Euler flow matching (`clsdpfmv2`, Beta sigma / clamp). Headline 30-step result above is 100 seeds.
+Euler flow matching (`clsdpfmv2`, Beta sigma + clamp from ckpt). Same harder seed half as other 50-seed ablations. Headline 30-step result in the main table is 100 seeds.
 
 
 | Steps | SR        | Successes | Run                                                   |
@@ -46,7 +46,11 @@ Euler flow matching (`clsdpfmv2`, Beta sigma / clamp). Headline 30-step result a
 | 8     | **36.0%** | 18/50     | `LiftBarrier-rf_clsdpfmv2_s8_150_100_20260911_002930` |
 | 16    | **40.0%** | 20/50     | `LiftBarrier-rf_clsdpfmv2_s16_150_100_20260911_012004` |
 | 20    | **30.0%** | 15/50     | `LiftBarrier-rf_clsdpfmv2_s20_150_100_20260911_021434` |
-| 30    | **46.0%** | 46/100    | `LiftBarrier-rf_clsdpfmv2_150_100_20260910_202240` (full protocol) |
+| 30    | **44.0%** | 22/50*    | `LiftBarrier-rf_clsdpfmv2_150_100_20260910_202240` (same half of 100-seed run) |
+
+*Full 100-seed SR at 30 steps is **46.0%** (46/100).
+
+**Read:** rises 4→16, dips at 20, then recovers — best on this half at **30 (44%)** / full protocol **46%**. Not a clean "more steps → better" curve (unlike FM-v1).
 
 
 
@@ -123,5 +127,6 @@ Same harder seed half. All keep Beta from the ckpt.
 - **DET** / **FG** = deterministic / factorized latent variants
 - Videos for recent runs: each run dir’s `videos/` folder
 - Run dirs: `robofactory/eval_results/`
-- Last updated: 2026-09-11
+- **Policy:** every eval run (full protocol or ablation) gets a leaderboard row/section — no silent results.
+- Last updated: 2026-09-12
 
