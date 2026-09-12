@@ -13,9 +13,10 @@ Success rate on held-out seeds. Unless noted, **100 seeds** (1000–1099), check
 | 4    | Factorized split latent (FG) + DET | `clsdpfg`         | 100 (DDPM default) | **55.0%** | 55/100    | `LiftBarrier-rf_clsdpfg_150_100_20260909_081648`     |
 | 5    | Deterministic latent (DET)         | `clsdpdet`        | 100 (DDPM default) | **49.0%** | 49/100    | `LiftBarrier-rf_clsdpdet_150_100_20260908_172328`    |
 | 5    | Flow matching (FM)                 | `clsdpfm`         | **50** (euler)     | **49.0%** | 49/100    | `LiftBarrier-rf_clsdpfm_s50_150_100_20260910_002518` |
-| 7    | Flow matching v2 (FM-v2)           | `clsdpfmv2`       | **30** (euler)     | **46.0%** | 46/100    | `LiftBarrier-rf_clsdpfmv2_150_100_20260910_202240`  |
-| 8    | Combo B-FG-FM-H25 (noclamp)        | `clsdpbfgfmh25`   | **30** (euler)     | **38.0%** | 38/100    | `LiftBarrier-rf_clsdpbfgfmh25_noclamp_150_100_20260911_160350` |
-| 9    | Flow matching (FM)                 | `clsdpfm`         | 4 (ckpt default)   | **23.0%** | 23/100    | `LiftBarrier-rf_clsdpfm_150_100_20260908_144039`     |
+| 5    | Combo B-FG-FM-H25-uni (noclamp)    | `clsdpbfgfmh25uni`| **30** (euler)     | **49.0%** | 49/100    | `LiftBarrier-rf_clsdpbfgfmh25uni_noclamp_150_100_20260912_072852` |
+| 8    | Flow matching v2 (FM-v2)           | `clsdpfmv2`       | **30** (euler)     | **46.0%** | 46/100    | `LiftBarrier-rf_clsdpfmv2_150_100_20260910_202240`  |
+| 9    | Combo B-FG-FM-H25 Beta (noclamp)   | `clsdpbfgfmh25`   | **30** (euler)     | **38.0%** | 38/100    | `LiftBarrier-rf_clsdpbfgfmh25_noclamp_150_100_20260911_160350` |
+| 10   | Flow matching (FM)                 | `clsdpfm`         | 4 (ckpt default)   | **23.0%** | 23/100    | `LiftBarrier-rf_clsdpfm_150_100_20260908_144039`     |
 
 
 
@@ -74,6 +75,20 @@ Euler flow matching (`clsdpbfgfmh25`, noclamp, `max_steps=65`). Headline 30-step
 
 
 
+## LiftBarrier-rf — Combo schedule: uniform vs Beta (100 seeds, 30 Euler, noclamp)
+
+Same B-FG-FM-H25 stack and shared `ctxbfgh25` priors; only Stage-2 `sigma_dist` differs. Both evals: `max_steps=65`, `--no-clamp-x1`, shift=1.0.
+
+
+| Schedule | Variant | SR | Successes | Run |
+| -------- | ------- | -- | --------- | --- |
+| **uniform** | `clsdpbfgfmh25uni` | **49.0%** | 49/100 | `LiftBarrier-rf_clsdpbfgfmh25uni_noclamp_150_100_20260912_072852` |
+| **Beta(1.5,1)** | `clsdpbfgfmh25` | **38.0%** | 38/100 | `LiftBarrier-rf_clsdpbfgfmh25_noclamp_150_100_20260911_160350` |
+
+**Read:** uniform wins by **+11 pts** on the full protocol — same direction as FM-v1 (uniform) vs FM-v2 (Beta).
+
+
+
 ## LiftBarrier-rf — clamp × schedule 2×2 (50 seeds, 1000–1049, 30 Euler steps)
 
 Isolates whether FM-v2's drop (67% → 46%) is the clamp, the Beta schedule, or both.
@@ -123,7 +138,8 @@ Same harder seed half. All keep Beta from the ckpt.
 - **Study B H25** = study B with action horizon 25 (`clsdph25`)
 - **FM** = study B prior + flow-matching action head (`clsdpfm`, euler)
 - **FM-v2** = same as FM with Beta(1.5,1) sigma schedule + clamp + 30-step default (`clsdpfmv2`)
-- **Combo B-FG-FM-H25** = Study B + FG + FM + horizon 25 (`clsdpbfgfmh25`); eval used `--no-clamp-x1`, `max_steps=65`, shift=1.0
+- **Combo B-FG-FM-H25** = Study B + FG + FM + horizon 25, Beta schedule (`clsdpbfgfmh25`); eval used `--no-clamp-x1`, `max_steps=65`, shift=1.0
+- **Combo B-FG-FM-H25-uni** = same stack with **uniform** sigma (`clsdpbfgfmh25uni`); same priors/horizon; +11 pts vs Beta arm (49% vs 38%)
 - **DET** / **FG** = deterministic / factorized latent variants
 - Videos for recent runs: each run dir’s `videos/` folder
 - Run dirs: `robofactory/eval_results/`
