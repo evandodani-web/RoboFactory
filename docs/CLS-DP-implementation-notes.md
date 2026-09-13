@@ -954,25 +954,32 @@ finish in 4-5 policy cycles at h25 and 14-62 at h8 (about 100 environment steps 
 and **no success in any 100-seed run has ever needed more than 65 cycles**, so the combo's
 `max_steps=65` never binds and is directly comparable to B-H25's 250.
 
-Of the combo's three components, two are measured and two are not:
+Of the combo's three components, three are now measured and one is still not:
 
 | Component | Measured? |
 |---|---|
 | flow head at h8 | yes — Study FM, 67% |
 | h25 with DDPM | yes — Study B-H25, 66% |
-| factorized latent on a **stochastic** base | **never** — no `*_ctxbfg_*` / `*_clsdpbfg_*` exists |
-| flow head at **h25** | **never** — Study FM was only ever h8 |
+| flow head at **h25** | yes — Study B-FM-H25, **63%** (`*_clsdpfmh25_*`) |
+| factorized latent on a **stochastic** base | **never alone** — only inside the failed combo (`*_ctxbfgh25_*` / `*_clsdpbfgfmh25*`) |
 
-Factorization is the leading suspect, and not only by elimination. The `*_ctxbfgh25_*`
-Stage 1 leak probe reported `NOT SEPARATED` at ratio 1.21-1.26x, i.e. `z_self` still predicts
-teammates about as well as the full prior does. The split paid its capacity cost and bought
-no actual separation. Study FG's +6 was measured on DET's already-degenerate latent, where
-almost any added structure helps; that does not transfer to a working stochastic prior.
+**Deciding run done: `*_clsdpfmh25_*` → 63/100 (63.0%).**
+Run `LiftBarrier-rf_clsdpfmh25_noclamp_150_100_20260913_105937`, protocol
+`max_steps=65`, `--no-clamp-x1`, 30 Euler. McNemar on seeds 1000–1099:
 
-**Deciding run: `SAMPLER=flow bash train_study_b_h25.sh`** -> `*_clsdpfmh25_*`. Stage 2 only,
-since `*_ctxh25_*` already exists. It is the flow head at h25 without factorization, so it
-splits the 17-point deficit: landing near 66% indicts factorization, landing near 49% indicts
-flow@h25.
+| vs | their SR | z | read |
+|---|---|---|---|
+| B-H25 | 66% | −0.63 | n.s. — flow@h25 ≈ DDPM@h25 |
+| FM @ h8 | 67% | −0.59 | n.s. — flow@h25 ≈ flow@h8 |
+| Study B | 61% | +0.31 | n.s. |
+| Combo uni | 49% | +1.98 | **sig.** — B-FM-H25 beats the combo |
+
+So flow@h25 **survives**. The combo's 17-point hole is not the flow head at h25; factorization
+(or its interaction with the rest of the stack) is indicted. That also matches the
+`*_ctxbfgh25_*` Stage 1 leak probe: `NOT SEPARATED` at ratio 1.21–1.26× — `z_self` still
+predicts teammates about as well as the full prior, so the split paid its capacity cost and
+bought no actual separation. Study FG's +6 was measured on DET's already-degenerate latent,
+where almost any added structure helps; that does not transfer to a working stochastic prior.
 
 ##### Sample-size caveat on this whole task
 
@@ -1000,11 +1007,17 @@ Override with `FORCE_OVERWRITE_CKPT=1` (the older Stage-1-only `FORCE_OVERWRITE_
 works). Resume is unaffected: it reads the Hydra run dir, so the guard never blocks resuming
 an interrupted run.
 
-### Study B-H25 — Study B + 25-step chunks (built, not yet trained)
+### Study B-H25 / B-FM-H25 — Study B + 25-step chunks (done)
 
 Clean longer-horizon ablation against Study B: same latent, Adam, 14x14 SigLIP, and
 150 LiftBarrier demos; only the action chunk and privileged-future windows grow to 25.
 This is the study that answers "does longer chunking help?" without confounding FG or FM.
+Both Stage 2 heads are scored:
+
+| Stage 2 | Tag | SR (100 seeds) | Run |
+|---|---|---|---|
+| DDPM | `clsdph25` | **66.0%** | `LiftBarrier-rf_clsdph25_150_100_20260910_033614` |
+| flow (uniform σ, noclamp, 30 Euler) | `clsdpfmh25` | **63.0%** | `LiftBarrier-rf_clsdpfmh25_noclamp_150_100_20260913_105937` |
 
 | Knob | Value |
 |---|---|

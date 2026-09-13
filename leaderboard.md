@@ -9,14 +9,15 @@ Success rate on held-out seeds. Unless noted, **100 seeds** (1000–1099), check
 | ---- | ---------------------------------- | ----------------- | ------------------ | --------- | --------- | ---------------------------------------------------- |
 | 1    | Flow matching (FM)                 | `clsdpfm`         | **30** (euler)     | **67.0%** | 67/100    | `LiftBarrier-rf_clsdpfm_s30_150_100_20260909_163941` |
 | 2    | Study B H25                        | `clsdph25`        | 100 (DDPM default) | **66.0%** | 66/100    | `LiftBarrier-rf_clsdph25_150_100_20260910_033614`    |
-| 3    | Study B — baseline CLS-DP          | `clsdp` (default) | 100 (DDPM default) | **61.0%** | 61/100    | `LiftBarrier-rf_150_100_20260830_135720`             |
-| 4    | Factorized split latent (FG) + DET | `clsdpfg`         | 100 (DDPM default) | **55.0%** | 55/100    | `LiftBarrier-rf_clsdpfg_150_100_20260909_081648`     |
-| 5    | Deterministic latent (DET)         | `clsdpdet`        | 100 (DDPM default) | **49.0%** | 49/100    | `LiftBarrier-rf_clsdpdet_150_100_20260908_172328`    |
-| 5    | Flow matching (FM)                 | `clsdpfm`         | **50** (euler)     | **49.0%** | 49/100    | `LiftBarrier-rf_clsdpfm_s50_150_100_20260910_002518` |
-| 5    | Combo B-FG-FM-H25-uni (noclamp)    | `clsdpbfgfmh25uni`| **30** (euler)     | **49.0%** | 49/100    | `LiftBarrier-rf_clsdpbfgfmh25uni_noclamp_150_100_20260912_072852` |
-| 8    | Flow matching v2 (FM-v2)           | `clsdpfmv2`       | **30** (euler)     | **46.0%** | 46/100    | `LiftBarrier-rf_clsdpfmv2_150_100_20260910_202240`  |
-| 9    | Combo B-FG-FM-H25 Beta (noclamp)   | `clsdpbfgfmh25`   | **30** (euler)     | **38.0%** | 38/100    | `LiftBarrier-rf_clsdpbfgfmh25_noclamp_150_100_20260911_160350` |
-| 10   | Flow matching (FM)                 | `clsdpfm`         | 4 (ckpt default)   | **23.0%** | 23/100    | `LiftBarrier-rf_clsdpfm_150_100_20260908_144039`     |
+| 3    | Study B-FM-H25 (noclamp)           | `clsdpfmh25`      | **30** (euler)     | **63.0%** | 63/100    | `LiftBarrier-rf_clsdpfmh25_noclamp_150_100_20260913_105937` |
+| 4    | Study B — baseline CLS-DP          | `clsdp` (default) | 100 (DDPM default) | **61.0%** | 61/100    | `LiftBarrier-rf_150_100_20260830_135720`             |
+| 5    | Factorized split latent (FG) + DET | `clsdpfg`         | 100 (DDPM default) | **55.0%** | 55/100    | `LiftBarrier-rf_clsdpfg_150_100_20260909_081648`     |
+| 6    | Deterministic latent (DET)         | `clsdpdet`        | 100 (DDPM default) | **49.0%** | 49/100    | `LiftBarrier-rf_clsdpdet_150_100_20260908_172328`    |
+| 6    | Flow matching (FM)                 | `clsdpfm`         | **50** (euler)     | **49.0%** | 49/100    | `LiftBarrier-rf_clsdpfm_s50_150_100_20260910_002518` |
+| 6    | Combo B-FG-FM-H25-uni (noclamp)    | `clsdpbfgfmh25uni`| **30** (euler)     | **49.0%** | 49/100    | `LiftBarrier-rf_clsdpbfgfmh25uni_noclamp_150_100_20260912_072852` |
+| 9    | Flow matching v2 (FM-v2)           | `clsdpfmv2`       | **30** (euler)     | **46.0%** | 46/100    | `LiftBarrier-rf_clsdpfmv2_150_100_20260910_202240`  |
+| 10   | Combo B-FG-FM-H25 Beta (noclamp)   | `clsdpbfgfmh25`   | **30** (euler)     | **38.0%** | 38/100    | `LiftBarrier-rf_clsdpbfgfmh25_noclamp_150_100_20260911_160350` |
+| 11   | Flow matching (FM)                 | `clsdpfm`         | 4 (ckpt default)   | **23.0%** | 23/100    | `LiftBarrier-rf_clsdpfm_150_100_20260908_144039`     |
 
 
 
@@ -108,6 +109,23 @@ Same B-FG-FM-H25 stack and shared `ctxbfgh25` priors; only Stage-2 `sigma_dist` 
 
 
 
+## LiftBarrier-rf — B-FM-H25 deciding run (100 seeds, 30 Euler, noclamp)
+
+Monolithic Study B latent + flow @ h25 (`clsdpfmh25`). Same `*_ctxh25_*` priors as B-H25; Stage 2 only. Protocol: `max_steps=65`, `--no-clamp-x1`, shift=1.0. This splits the combo's 17-point deficit: near 66% indicts factorization; near 49% indicts flow@h25.
+
+
+| Comparator | Variant | SR | vs B-FM-H25 (McNemar z) | Run |
+| ---------- | ------- | -- | ----------------------- | --- |
+| **B-FM-H25** | `clsdpfmh25` | **63.0%** | — | `LiftBarrier-rf_clsdpfmh25_noclamp_150_100_20260913_105937` |
+| B-H25 (DDPM) | `clsdph25` | 66.0% | z=−0.63 (n.s.) | `LiftBarrier-rf_clsdph25_150_100_20260910_033614` |
+| FM @ h8 | `clsdpfm` @30 | 67.0% | z=−0.59 (n.s.) | `LiftBarrier-rf_clsdpfm_s30_150_100_20260909_163941` |
+| Study B | `clsdp` | 61.0% | z=+0.31 (n.s.) | `LiftBarrier-rf_150_100_20260830_135720` |
+| Combo uni | `clsdpbfgfmh25uni` | 49.0% | z=+1.98 (sig.) | `LiftBarrier-rf_clsdpbfgfmh25uni_noclamp_150_100_20260912_072852` |
+
+**Read:** flow@h25 **survives** — statistically tied with B-H25 and FM@h8. The combo's regression is factorization (or its interaction with the stack), not the flow head at h25.
+
+
+
 ## LiftBarrier-rf — clamp × schedule 2×2 (50 seeds, 1000–1049, 30 Euler steps)
 
 Isolates whether FM-v2's drop (67% → 46%) is the clamp, the Beta schedule, or both.
@@ -155,6 +173,7 @@ Same harder seed half. All keep Beta from the ckpt.
 
 - **Study B** = baseline stochastic CLS-DP (`clsdp`, DDPM, sampled `z`)
 - **Study B H25** = study B with action horizon 25 (`clsdph25`)
+- **Study B-FM-H25** = Study B prior @ h25 + flow Stage 2 (`clsdpfmh25`); deciding run for the combo regression — **63%**, tied with B-H25/FM; factorization indicted
 - **FM** = study B prior + flow-matching action head (`clsdpfm`, euler)
 - **FM-v2** = same as FM with Beta(1.5,1) sigma schedule + clamp + 30-step default (`clsdpfmv2`)
 - **Combo B-FG-FM-H25** = Study B + FG + FM + horizon 25, Beta schedule (`clsdpbfgfmh25`); eval used `--no-clamp-x1`, `max_steps=65`, shift=1.0
@@ -163,5 +182,5 @@ Same harder seed half. All keep Beta from the ckpt.
 - Videos for recent runs: each run dir’s `videos/` folder
 - Run dirs: `robofactory/eval_results/`
 - **Policy:** every eval run (full protocol or ablation) gets a leaderboard row/section — no silent results.
-- Last updated: 2026-09-12
+- Last updated: 2026-09-13
 
