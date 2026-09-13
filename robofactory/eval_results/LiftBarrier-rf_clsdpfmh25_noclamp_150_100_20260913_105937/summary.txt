@@ -1,0 +1,12 @@
+task: LiftBarrier-rf
+variant: clsdpfmh25
+inference_steps: default
+clamp: off
+shift: 1.0 (ckpt default)
+sigma_dist: uniform (training schedule in ckpt; inference uses Euler grid)
+solver: flow-matching (euler)
+max_steps: 65
+demos: 150  checkpoint: 100
+seeds: 1000..1099
+total: 100  success: 63  success_rate: 63.0%
+videos: eval_results/LiftBarrier-rf_clsdpfmh25_noclamp_150_100_20260913_105937/videos/
