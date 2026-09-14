@@ -1,5 +1,21 @@
 # CLS-DP Implementation Notes
 
+> **FROZEN — this tree is no longer where CLS-DP is developed.**
+>
+> The canonical CLS-DP implementation now lives in the `symbiotic` repository, at
+> `packages/cls_dp` on the `cls_dp_bicoord` branch. It carries everything here (the core,
+> the flow-matching head, the sampler / horizon / action_space config groups, the Stage 1
+> prior probe) plus per-benchmark adapters, and `tests/test_golden_parity.py` there pins it
+> bit-for-bit against this tree on a matching interpreter.
+>
+> This copy is kept to reproduce the LiftBarrier numbers recorded below and nothing else.
+> Do not add features here — they will diverge silently, which is the exact failure the
+> move was made to prevent. Two things were deliberately *not* carried over, both because
+> they were measured as harmful: factorized latents (`bfg`/`fg`) and the Beta sigma
+> schedule. Their evidence stays in this document.
+>
+> Tagged `cls-dp-frozen` at the commit that closed the study program.
+
 Running log of decisions, rationale, and open questions while implementing CLS-DP in this repo.
 Companion to [CLS-DP-replication-spec.md](CLS-DP-replication-spec.md), which is the paper extraction.
 
@@ -980,6 +996,56 @@ So flow@h25 **survives**. The combo's 17-point hole is not the flow head at h25;
 predicts teammates about as well as the full prior, so the split paid its capacity cost and
 bought no actual separation. Study FG's +6 was measured on DET's already-degenerate latent,
 where almost any added structure helps; that does not transfer to a working stochastic prior.
+
+##### Resolved: it was factorization
+
+`*_clsdpfmh25_*` scored **63%** — indistinguishable from B-H25 (McNemar 13/10, z=0.42) and
+from FM at h8 (25/21, z=0.44). The 17-point combo deficit decomposes additively:
+
+| Step | SR | Cost | McNemar |
+|---|---|---|---|
+| Study B-H25 (h25, DDPM) | 66% | — | — |
+| + flow head -> `clsdpfmh25` | 63% | **-3** | z=0.42, noise |
+| + factorized latent -> `clsdpbfgfmh25uni` | 49% | **-14** | z=1.84, marginal |
+
+Flow matching survives the move to h25 at no measurable cost. **Factorization on a stochastic
+base is what broke the combo**, and the mechanism was flagged before the eval ran: the
+`*_ctxbfgh25_*` leak probe reported `NOT SEPARATED` at ratio 1.21-1.26x, so the split paid its
+capacity cost and never achieved the separation it exists to produce. That the prediction was
+made in advance is what makes a marginal z=1.84 worth acting on.
+
+This also explains Study FG's +6 over DET without contradiction. Factorization substitutes
+for a degenerate latent and competes with a healthy one: it helped DET's deterministic,
+un-regularized `z` and hurt Study B's KL-regularized stochastic one. **The B-FG line is
+dead** — do not stack the split on a stochastic prior again.
+
+##### The uncomfortable part: nothing beats the baseline yet
+
+Every configuration that is not actively broken sits in one statistically flat cluster:
+
+| Config | SR | vs Study B |
+|---|---|---|
+| FM h8 @30 | 67% | z=0.77, ns |
+| Study B-H25 | 66% | z=0.62, ns |
+| FM h25 @30 | 63% | z=0.15, ns |
+| Study B (baseline) | 61% | — |
+
+All pairwise McNemar comparisons inside that cluster fall between z=0.15 and z=0.77. After
+the full study program, **no variant beats Study B by a resolvable margin.** What the program
+has produced is a set of solid negative results — Beta sigma costs ~21 points, factorization
+on a stochastic base ~14, DET ~12 — plus one real non-success-rate win.
+
+That win is latency, and it is exactly what `CLS-DP-improvements.md` open question 1
+predicted: "Flow matching is a latency change, not obviously a capability change. A flat
+result at 25x fewer model calls is already a good outcome; state that as the hypothesis up
+front rather than hunting for an accuracy story afterwards." `clsdpfmh25` and `clsdph25` have
+identical episode profiles — successes finish in 4-5 policy cycles for both — at **30
+denoiser calls per action against 100**. Same behavior, 3.3x fewer network evaluations.
+
+The binding constraint now is measurement, not method. The live cluster spans 6 points and
+100 seeds resolves about 10, so the next experiment either needs a large effect or a bigger
+seed budget. Eval is cheap relative to training; 300-400 seeds on the top three would cost
+less than one Stage 2 run and would finally separate them.
 
 ##### Sample-size caveat on this whole task
 
