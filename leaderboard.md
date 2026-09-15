@@ -5,19 +5,19 @@ Success rate on held-out seeds. Unless noted, **100 seeds** (1000–1099), check
 ## LiftBarrier-rf — main results (100 seeds)
 
 
-| Rank | Study / config                     | Variant           | Inference steps    | SR        | Successes | Run                                                  |
-| ---- | ---------------------------------- | ----------------- | ------------------ | --------- | --------- | ---------------------------------------------------- |
-| 1    | Flow matching (FM)                 | `clsdpfm`         | **30** (euler)     | **67.0%** | 67/100    | `LiftBarrier-rf_clsdpfm_s30_150_100_20260909_163941` |
-| 2    | Study B H25                        | `clsdph25`        | 100 (DDPM default) | **66.0%** | 66/100    | `LiftBarrier-rf_clsdph25_150_100_20260910_033614`    |
-| 3    | Study B-FM-H25 (noclamp)           | `clsdpfmh25`      | **30** (euler)     | **63.0%** | 63/100    | `LiftBarrier-rf_clsdpfmh25_noclamp_150_100_20260913_105937` |
-| 4    | Study B — baseline CLS-DP          | `clsdp` (default) | 100 (DDPM default) | **61.0%** | 61/100    | `LiftBarrier-rf_150_100_20260830_135720`             |
-| 5    | Factorized split latent (FG) + DET | `clsdpfg`         | 100 (DDPM default) | **55.0%** | 55/100    | `LiftBarrier-rf_clsdpfg_150_100_20260909_081648`     |
-| 6    | Deterministic latent (DET)         | `clsdpdet`        | 100 (DDPM default) | **49.0%** | 49/100    | `LiftBarrier-rf_clsdpdet_150_100_20260908_172328`    |
-| 6    | Flow matching (FM)                 | `clsdpfm`         | **50** (euler)     | **49.0%** | 49/100    | `LiftBarrier-rf_clsdpfm_s50_150_100_20260910_002518` |
-| 6    | Combo B-FG-FM-H25-uni (noclamp)    | `clsdpbfgfmh25uni`| **30** (euler)     | **49.0%** | 49/100    | `LiftBarrier-rf_clsdpbfgfmh25uni_noclamp_150_100_20260912_072852` |
-| 9    | Flow matching v2 (FM-v2)           | `clsdpfmv2`       | **30** (euler)     | **46.0%** | 46/100    | `LiftBarrier-rf_clsdpfmv2_150_100_20260910_202240`  |
-| 10   | Combo B-FG-FM-H25 Beta (noclamp)   | `clsdpbfgfmh25`   | **30** (euler)     | **38.0%** | 38/100    | `LiftBarrier-rf_clsdpbfgfmh25_noclamp_150_100_20260911_160350` |
-| 11   | Flow matching (FM)                 | `clsdpfm`         | 4 (ckpt default)   | **23.0%** | 23/100    | `LiftBarrier-rf_clsdpfm_150_100_20260908_144039`     |
+| Rank | Study / config                     | Variant           | Obs                         | Inference steps    | SR        | Successes | Run                                                  |
+| ---- | ---------------------------------- | ----------------- | --------------------------- | ------------------ | --------- | --------- | ---------------------------------------------------- |
+| 1    | Flow matching (FM)                 | `clsdpfm`         | per-agent head (no wrist)   | **30** (euler)     | **67.0%** | 67/100    | `LiftBarrier-rf_clsdpfm_s30_150_100_20260909_163941` |
+| 2    | Study B H25                        | `clsdph25`        | per-agent head (no wrist)   | 100 (DDPM default) | **66.0%** | 66/100    | `LiftBarrier-rf_clsdph25_150_100_20260910_033614`    |
+| 3    | Study B-FM-H25 (noclamp)           | `clsdpfmh25`      | per-agent head (no wrist)   | **30** (euler)     | **63.0%** | 63/100    | `LiftBarrier-rf_clsdpfmh25_noclamp_150_100_20260913_105937` |
+| 4    | Study B — baseline CLS-DP          | `clsdp` (default) | per-agent head (no wrist)   | 100 (DDPM default) | **61.0%** | 61/100    | `LiftBarrier-rf_150_100_20260830_135720`             |
+| 5    | Factorized split latent (FG) + DET | `clsdpfg`         | per-agent head (no wrist)   | 100 (DDPM default) | **55.0%** | 55/100    | `LiftBarrier-rf_clsdpfg_150_100_20260909_081648`     |
+| 6    | Deterministic latent (DET)         | `clsdpdet`        | per-agent head (no wrist)   | 100 (DDPM default) | **49.0%** | 49/100    | `LiftBarrier-rf_clsdpdet_150_100_20260908_172328`    |
+| 6    | Flow matching (FM)                 | `clsdpfm`         | per-agent head (no wrist)   | **50** (euler)     | **49.0%** | 49/100    | `LiftBarrier-rf_clsdpfm_s50_150_100_20260910_002518` |
+| 6    | Combo B-FG-FM-H25-uni (noclamp)    | `clsdpbfgfmh25uni`| per-agent head (no wrist)   | **30** (euler)     | **49.0%** | 49/100    | `LiftBarrier-rf_clsdpbfgfmh25uni_noclamp_150_100_20260912_072852` |
+| 9    | Flow matching v2 (FM-v2)           | `clsdpfmv2`       | per-agent head (no wrist)   | **30** (euler)     | **46.0%** | 46/100    | `LiftBarrier-rf_clsdpfmv2_150_100_20260910_202240`  |
+| 10   | Combo B-FG-FM-H25 Beta (noclamp)   | `clsdpbfgfmh25`   | per-agent head (no wrist)   | **30** (euler)     | **38.0%** | 38/100    | `LiftBarrier-rf_clsdpbfgfmh25_noclamp_150_100_20260911_160350` |
+| 11   | Flow matching (FM)                 | `clsdpfm`         | per-agent head (no wrist)   | 4 (ckpt default)   | **23.0%** | 23/100    | `LiftBarrier-rf_clsdpfm_150_100_20260908_144039`     |
 
 
 
@@ -162,9 +162,9 @@ Same harder seed half. All keep Beta from the ckpt.
 ## LiftBarrier-rf — earlier baseline (100 demos)
 
 
-| Study / config  | Variant           | SR        | Successes | Run                                      |
-| --------------- | ----------------- | --------- | --------- | ---------------------------------------- |
-| Baseline CLS-DP | `clsdp` (default) | **37.0%** | 37/100    | `LiftBarrier-rf_100_100_20260829_024814` |
+| Study / config  | Variant           | Obs                       | SR        | Successes | Run                                      |
+| --------------- | ----------------- | ------------------------- | --------- | --------- | ---------------------------------------- |
+| Baseline CLS-DP | `clsdp` (default) | per-agent head (no wrist) | **37.0%** | 37/100    | `LiftBarrier-rf_100_100_20260829_024814` |
 
 
 
@@ -182,5 +182,6 @@ Same harder seed half. All keep Beta from the ckpt.
 - Videos for recent runs: each run dir’s `videos/` folder
 - Run dirs: `robofactory/eval_results/`
 - **Policy:** every eval run (full protocol or ablation) gets a leaderboard row/section — no silent results.
-- Last updated: 2026-09-13
+- **Obs:** every row states cameras. On LiftBarrier that is always RoboFactory's per-agent third-person `head_camera_agent{i}` — **no wrist**. BiCoord CLS-DP variants differ (head vs head+own wrist) and must not be collapsed into one cell without saying which.
+- Last updated: 2026-09-14
 
